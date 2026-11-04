@@ -1,0 +1,192 @@
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import type { Api, BookingRow, Entity, Result, Row } from "./types";
+import { ENTITY_ID } from "./types";
+import { cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
+
+let client: SupabaseClient | null = null;
+function sb(): SupabaseClient {
+  if (!client) {
+    client = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL as string, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string);
+  }
+  return client;
+}
+
+/** Postgres / PostgREST error -> translatable code */
+export function dbErrorCode(e: { code?: string; message?: string } | null): string {
+  const m = e?.message ?? "";
+  for (const c of ["capacity_exceeds_room", "capacity_below_bookings", "cannot_demote_self", "cannot_change_login"]) {
+    if (m.includes(c)) return c;
+  }
+  switch (e?.code) {
+    case "23P01": return m.includes("trainer") ? "trainer_overlap" : "room_overlap";
+    case "23503": return "in_use";
+    case "23505": return "duplicate";
+    case "23514":
+      if (m.includes("class_sessions_check")) return "invalid_time";
+      if (m.includes("members_check")) return "trainer_needs_link";
+      return "invalid_value";
+    case "23502": return "required";
+    case "42501": return "forbidden";
+    case "22P02": case "22007": case "22008": return "invalid_value";
+  }
+  return "error";
+}
+
+const fail = (e: { code?: string; message?: string } | null): Result => ({ ok: false, code: dbErrorCode(e), message: e?.message });
+
+async function rpc(fn: string, args: Record<string, unknown>): Promise<Result> {
+  const { data, error } = await sb().rpc(fn, args);
+  if (error) return fail(error);
+  return data as Result;
+}
+
+const now = () => new Date().toISOString();
+
+export const supabaseApi: Api = {
+  mode: "supabase",
+
+  async getMe() {
+    const { data: s } = await sb().auth.getSession();
+    if (!s.session) return null;
+    const { data } = await sb().from("v_me").select("*").maybeSingle();
+    return data ?? null;
+  },
+
+  async register({ name, surname, phone, password, lang }) {
+    const p = normalizePhone(phone);
+    if (!validName(name) || !validName(surname)) return { ok: false, code: "invalid_name" };
+    if (!p) return { ok: false, code: "invalid_phone" };
+    if (password.length < MIN_PASSWORD) return { ok: false, code: "weak_password" };
+
+    // Preferred path: server route creates a confirmed user with the service key.
+    const res = await fetch("/api/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, surname, phone: p, password, lang }),
+    }).catch(() => null);
+    const body: (Result & { fallback?: boolean }) | null = res ? await res.json().catch(() => null) : null;
+
+    if (body && !body.fallback) {
+      if (!body.ok) return body;
+    } else {
+      // No service key configured: plain sign-up (requires "Confirm email" OFF in Supabase).
+      const { error } = await sb().auth.signUp({
+        email: phoneToAuthEmail(p),
+        password,
+        options: { data: { member_name: name.trim(), member_surname: surname.trim(), phone_number: p, preferred_language: lang } },
+      });
+      if (error) {
+        const msg = error.message.toLowerCase();
+        if (msg.includes("already") || error.code === "user_already_exists") return { ok: false, code: "phone_taken" };
+        if (msg.includes("password")) return { ok: false, code: "weak_password" };
+        if (msg.includes("database error")) return { ok: false, code: "phone_taken" };
+        return { ok: false, code: "error", message: error.message };
+      }
+    }
+    // log the new member in (FR-04: "the member is logged in")
+    return supabaseApi.login(p, password);
+  },
+
+  async login(phone, password) {
+    const p = normalizePhone(phone);
+    if (!p) return { ok: false, code: "bad_credentials" };
+    const { error } = await sb().auth.signInWithPassword({ email: phoneToAuthEmail(p), password });
+    return error ? { ok: false, code: "bad_credentials" } : { ok: true, code: "saved" };
+  },
+
+  async logout() {
+    await sb().auth.signOut();
+  },
+
+  async setLanguage(lang) {
+    await sb().rpc("set_my_language", { p_lang: lang });
+  },
+
+  async listBranches() {
+    const { data } = await sb().from("branches").select("*").order("branch_name");
+    return data ?? [];
+  },
+
+  async listSessions(opts) {
+    let q = sb().from("v_sessions").select("*").order("start_time");
+    if (!opts?.includePast) q = q.gt("start_time", now());
+    const { data } = await q;
+    return data ?? [];
+  },
+
+  async searchTrainers(q) {
+    const c = cleanQuery(q);
+    if (!c) return [];
+    const { data } = await sb().from("v_trainers").select("*").ilike("trainer_name", `%${c}%`).order("trainer_name");
+    return data ?? [];
+  },
+
+  async searchBranches(q) {
+    const c = cleanQuery(q);
+    if (!c) return [];
+    const { data } = await sb().from("branches").select("*")
+      .or(`branch_name.ilike.*${c}*,address.ilike.*${c}*`).order("branch_name");
+    return data ?? [];
+  },
+
+  async myBookings(memberId) {
+    const { data } = await sb().from("v_bookings").select("*").eq("member_id", memberId).order("start_time", { ascending: false });
+    return (data ?? []) as BookingRow[];
+  },
+
+  async searchBookings(q) {
+    const c = cleanQuery(q);
+    if (!c) return [];
+    // v_bookings itself limits members to their own rows (admins see all)
+    const { data } = await sb().from("v_bookings").select("*")
+      .or(`class_name.ilike.*${c}*,trainer_name.ilike.*${c}*,branch_name.ilike.*${c}*,member_fullname.ilike.*${c}*`)
+      .order("start_time", { ascending: false }).limit(50);
+    return (data ?? []) as BookingRow[];
+  },
+
+  book: (sessionId) => rpc("book_session", { p_session_id: sessionId }),
+  cancel: (bookingId, acceptFee = false) => rpc("cancel_booking", { p_booking_id: bookingId, p_accept_fee: acceptFee }),
+
+  async trainerRoster() {
+    const { data } = await sb().from("v_trainer_roster").select("*")
+      .gt("end_time", new Date(Date.now() - 12 * 3600_000).toISOString()).order("start_time");
+    return data ?? [];
+  },
+
+  async adminList(entity: Entity) {
+    const { data } = await sb().from(entity).select("*").order(ENTITY_ID[entity]);
+    return (data ?? []) as Row[];
+  },
+
+  async adminInsert(entity, row) {
+    const { error } = await sb().from(entity).insert(row).select();
+    return error ? fail(error) : { ok: true, code: "created" };
+  },
+
+  async adminUpdate(entity, id, row) {
+    const { data, error } = await sb().from(entity).update(row).eq(ENTITY_ID[entity], id).select();
+    if (error) return fail(error);
+    return data && data.length ? { ok: true, code: "updated" } : { ok: false, code: "forbidden" };
+  },
+
+  async adminDelete(entity, id) {
+    const { data, error } = await sb().from(entity).delete().eq(ENTITY_ID[entity], id).select();
+    if (error) return fail(error);
+    return data && data.length ? { ok: true, code: "deleted" } : { ok: false, code: "forbidden" };
+  },
+
+  async allBookings() {
+    const { data } = await sb().from("v_bookings").select("*")
+      .in("booking_status", ["Confirmed", "Attended"])
+      .gt("end_time", new Date(Date.now() - 12 * 3600_000).toISOString())
+      .order("start_time");
+    return (data ?? []) as BookingRow[];
+  },
+
+  async listReaders() {
+    const { data } = await sb().from("v_readers").select("*").order("reader_id");
+    return data ?? [];
+  },
+
+  checkIn: (bookingId, readerId) => rpc("check_in_booking", { p_booking_id: bookingId, p_reader_id: readerId }),
+};
