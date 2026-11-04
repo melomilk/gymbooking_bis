@@ -30,7 +30,7 @@ export default function ProfilePage() {
     else load();
   }, [authLoading, me, load, router]);
 
-  // FR-06: free until 3 h before start; later -> warn and ask to confirm
+  // FR-06: free until 3 h before the start; later -> warn and ask to confirm
   async function cancel(b: BookingRow, acceptFee = false) {
     const r = await api.cancel(b.booking_id, acceptFee);
     if (r.code === "late_cancel_needs_confirm") { setConfirmLate(b); return; }

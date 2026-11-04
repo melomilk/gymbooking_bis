@@ -24,7 +24,7 @@ export default function LoginPage() {
       : await api.register({ name: f.name, surname: f.surname, phone: f.phone, password: f.password, lang });
     if (!r.ok) { setBusy(false); return setError(tr(r)); }
     await refresh();
-    router.push("/"); // FR-04: logged in and redirected to the main page
+    router.push("/"); // FR-04: logged in, then redirected to the main page
   }
 
   return (
