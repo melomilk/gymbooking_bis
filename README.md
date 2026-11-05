@@ -3,6 +3,22 @@
 Next.js (App Router) + Supabase (Postgres + Auth). Deploys to Vercel.
 Without Supabase keys it runs in **demo mode** (data saved in the browser), so you can try it immediately.
 
+## Documentation
+- [Architecture](docs/ARCHITECTURE.md) – layers, pages and roles, main flows, localisation, security
+- [API reference](docs/API.md) – every `api.*` method, `POST /api/register`, all result codes
+- [Database](docs/DATABASE.md) – tables, constraints, views, functions, triggers, RLS
+
+## Project structure
+```
+src/app/            pages: / (schedule), /login, /profile, /search, /trainer, /admin
+src/app/api/        server route: register
+src/components/     Header, Modal, Toast, CrudSection, Providers (language + auth)
+src/lib/            api.ts (mode switch), supabaseApi.ts, demoApi.ts, types.ts,
+                    i18n.ts (kk/en/ru), validate.ts, format.ts
+supabase/           schema.sql, seed.sql
+docs/               technical documentation
+```
+
 ## Requirements coverage (practice_10)
 
 | Req | How it is implemented | Where |

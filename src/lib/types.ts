@@ -81,32 +81,77 @@ export const ENTITY_ID: Record<Entity, string> = {
 };
 export type Row = Record<string, unknown>;
 
+/**
+ * Data access used by every page. Implemented twice with the same rules:
+ * `supabaseApi` (real database) and `demoApi` (browser storage).
+ * Write actions return a {@link Result}; translate it in the UI with `tr()`.
+ * Full reference: docs/API.md.
+ */
 export interface Api {
+  /** Which implementation is active. Pages use it only for the demo banner. */
   mode: "supabase" | "demo";
-  // auth (FR-04)
+
+  // ---------- auth (FR-04, FR-07) ----------
+  /** Logged-in member with computed `effective_status`, or `null` if logged out. */
   getMe(): Promise<Me | null>;
+  /**
+   * Validates input, creates the account and logs the member in.
+   * Codes: `invalid_name`, `invalid_phone`, `weak_password`, `phone_taken`, `saved`.
+   */
   register(i: RegisterInput): Promise<Result>;
+  /** Log in by phone (normalised to +7…) and password. Codes: `saved`, `bad_credentials`. */
   login(phone: string, password: string): Promise<Result>;
   logout(): Promise<void>;
+  /** Saves the UI language on the member's account so it applies at next login. */
   setLanguage(lang: Lang): Promise<void>;
-  // public data
+
+  // ---------- public data ----------
   listBranches(): Promise<Branch[]>;
+  /** Schedule with `spots_taken`. Future sessions only unless `includePast` (admin panel). */
   listSessions(opts?: { includePast?: boolean }): Promise<SessionRow[]>;
+  /** Trainer names containing `q` (FR-08). Contacts are never returned. */
   searchTrainers(q: string): Promise<Trainer[]>;
+  /** Branches whose name or address contains `q` (FR-08). */
   searchBranches(q: string): Promise<Branch[]>;
-  // member
+
+  // ---------- member ----------
+  /** All bookings of one member, newest first. */
   myBookings(memberId: number): Promise<BookingRow[]>;
-  searchBookings(q: string): Promise<BookingRow[]>; // own rows for members, all rows for admins
+  /** Bookings matching class, trainer, branch or member name. Own rows for members, all rows for admins. */
+  searchBookings(q: string): Promise<BookingRow[]>;
+  /**
+   * Books a place (FR-01, FR-02). Atomic: the session row is locked while seats are counted.
+   * Codes: `booked`, `class_full`, `already_booked`, `class_started`,
+   * `membership_suspended`, `membership_expired`, `not_signed_in`, `session_not_found`.
+   */
   book(sessionId: number): Promise<Result>;
+  /**
+   * Cancels a confirmed booking (FR-06). Less than 3 h before start the first call returns
+   * `late_cancel_needs_confirm`; call again with `acceptFee = true` to cancel and forfeit the fee.
+   * Codes: `cancelled`, `cancelled_fee_forfeited`, `not_cancellable`, `class_started`, `booking_not_found`.
+   */
   cancel(bookingId: number, acceptFee?: boolean): Promise<Result>;
-  // trainer
+
+  // ---------- trainer ----------
+  /** The trainer's own sessions with attendee names (FR-10). */
   trainerRoster(): Promise<RosterRow[]>;
-  // admin
+
+  // ---------- admin (FR-09) ----------
+  /** All rows of an editable table. */
   adminList(entity: Entity): Promise<Row[]>;
+  /** Codes: `created` or a database error code (`duplicate`, `room_overlap`, `capacity_exceeds_room`, …). */
   adminInsert(entity: Entity, row: Row): Promise<Result>;
+  /** Codes: `updated`, `forbidden`, or a database error code. */
   adminUpdate(entity: Entity, id: number, row: Row): Promise<Result>;
+  /** Codes: `deleted`, `in_use` (still referenced), `forbidden`. */
   adminDelete(entity: Entity, id: number): Promise<Result>;
+  /** Confirmed and attended bookings from the last 12 h onward, for check-in. */
   allBookings(): Promise<BookingRow[]>;
   listReaders(): Promise<Reader[]>;
+  /**
+   * Records an NFC check-in: inserts a log row and sets the booking to `Attended`
+   * in one transaction. Codes: `checked_in`, `already_checked_in`, `not_checkinable`,
+   * `unknown_reader`, `wrong_branch_reader`, `admin_only`.
+   */
   checkIn(bookingId: number, readerId: string): Promise<Result>;
 }
