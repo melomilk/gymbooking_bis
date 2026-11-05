@@ -1,89 +1,194 @@
-# PulseGym: Gym Booking System (MVP)
+# PulseGym: Gym Booking System
 
-Next.js (App Router) + Supabase (Postgres + Auth). Deploys to Vercel.
-Without Supabase keys it runs in **demo mode** (data saved in the browser), so you can try it immediately.
+A web application for booking group fitness classes (Yoga, Pilates, HIIT, Spinning, Zumba) across several gym branches.
+Members register with a phone number, browse the schedule and book a place. The system enforces class capacity and membership rules, and records attendance through an NFC check-in.
 
-## Documentation
-- [Architecture](docs/ARCHITECTURE.md) – layers, pages and roles, main flows, localisation, security
-- [API reference](docs/API.md) – every `api.*` method, `POST /api/register`, all result codes
-- [Database](docs/DATABASE.md) – tables, constraints, views, functions, triggers, RLS
+**Live site:** https://gymbooking-bis.vercel.app
+**Course:** Basics of Information Systems, KBTU, team project (Business Experts)
+
+---
+
+## Features
+
+**Members**
+- Register and log in with phone number and password
+- Browse the schedule, filter by branch, class type and day, and see places left in real time
+- Book a class. A booking is rejected if the class is full, already booked, already started, or the membership is suspended or expires before the class.
+- When a booking is rejected, get up to 3 other times of the same class to book instead
+- My Profile: name, membership status, expiry date, upcoming bookings and history
+- Cancel for free until 3 hours before the class. Later cancellations need confirmation and forfeit the booking fee.
+- Search trainers, branches and own bookings
+- Interface in Kazakh, English and Russian. The choice is saved on the account.
+
+**Trainers**
+- See their own upcoming classes with attendee names. They can't see other trainers' classes or members' contact details.
+
+**Admins**
+- Admin panel: create, edit and delete sessions, class types, trainers, branches and rooms
+- Manage members: role (Member / Trainer / Admin), membership status and expiry
+- Search all bookings
+- NFC check-in: record a member's arrival and mark the booking as Attended
+
+---
+
+## Tech stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| Frontend framework | **Next.js 16** (App Router) | Pages, routing, build |
+| UI library | **React 19** | Components and state |
+| Language | **TypeScript** | Type safety across the app |
+| Styling | Plain CSS | Layout, light/dark theme, mobile layout |
+| Localization | Custom dictionary (`src/lib/i18n.ts`) | Kazakh / English / Russian |
+| Database | **PostgreSQL** (hosted by Supabase) | All data and business rules |
+| API | **PostgREST** (built into Supabase) | Generates a REST API from tables, views and functions |
+| Authentication | **Supabase Auth** | Accounts, sessions, bcrypt password hashing |
+| Database client | `@supabase/supabase-js` | Frontend → Supabase calls |
+| Server code | Next.js API route (`/api/register`) | Creates accounts using the secret key, which stays on the server |
+| Hosting | **Vercel** (app), **Supabase Cloud** (database + auth) | Deployment |
+
+### Architecture
+
+```mermaid
+flowchart LR
+    U[Browser<br/>Next.js + React] -->|supabase-js<br/>REST + JWT| API[Supabase API<br/>PostgREST]
+    U -->|login / sessions| AUTH[Supabase Auth]
+    U -->|register| R[Vercel serverless<br/>/api/register]
+    R -->|service key| AUTH
+    API --> DB[(PostgreSQL<br/>tables · views · functions · RLS)]
+    AUTH --> DB
+```
+
+There is no separate backend server. The frontend talks to Supabase directly, and the backend logic lives in PostgreSQL:
+- **Tables and constraints** keep the data valid (unique bookings, capacity limits, no overlapping sessions).
+- **SQL functions** carry out the business actions (`book_session`, `cancel_booking`, `check_in_booking`). Each runs as one transaction.
+- **Row Level Security (RLS)** and role checks decide who can read or change what. The rules apply even if someone calls the API directly, bypassing the website.
+
+### How a booking works
+
+1. The member clicks **Book**.
+2. The browser calls the database function `book_session(session_id)` with the member's login token.
+3. The function locks the session row, then checks login, session time, membership status and expiry, duplicate booking, and capacity.
+4. It inserts the booking, or returns a rejection code such as `class_full`.
+5. The frontend translates the code into the selected language. On `class_full` or `already_booked` it also offers up to 3 alternative sessions.
+
+The row lock means two members can't take the last place at the same moment.
+
+---
+
+## Database
+
+9 tables in PostgreSQL:
+
+| Table | Stores | Key rules |
+|---|---|---|
+| `branches` | Gym locations | Unique front-desk phone |
+| `rooms` | Rooms in a branch | Max capacity > 0; room name unique per branch |
+| `trainers` | Trainer profiles | Contacts visible to admins only |
+| `classes` | Class types (Yoga, Pilates…) | Unique name, duration in minutes |
+| `class_sessions` | Scheduled classes | End after start; capacity ≤ room size; no overlapping sessions in the same room or for the same trainer |
+| `members` | Accounts and memberships | Unique phone; role Member / Trainer / Admin; preferred language |
+| `bookings` | Member ↔ session (bridge table) | `UNIQUE(member_id, session_id)`; status Confirmed / Cancelled / Attended / No-show |
+| `readers` | NFC readers | Linked to a branch |
+| `check_in_logs` | Arrivals | One check-in per booking |
+
+Relationships: Branch 1:M Rooms, Branch 1:M Sessions, Class 1:M Sessions, Trainer 1:M Sessions, Member M:N Session (through Bookings), Booking 1:0..1 Check-in.
+
+**Views** give each role the data it may see:
+
+| View | Shows |
+|---|---|
+| `v_sessions` | Public schedule with places taken (no personal data) |
+| `v_me` | The logged-in member's own record and membership status |
+| `v_bookings` | Own bookings for members, all bookings for admins |
+| `v_trainer_roster` | A trainer's own classes with attendee names |
+
+**Membership status:** only `Active` / `Suspended` are stored. `Expired` is calculated from `membership_expiry`, so it can never go out of date.
+
+---
+
+## Security
+
+- Passwords are stored by Supabase Auth as **bcrypt** hashes, never in plain text.
+- Every table has **Row Level Security** turned on. Members can change data only through the booking functions. Catalog tables (sessions, trainers, branches…) can be changed only by admins.
+- Admin and trainer pages redirect other roles to the main page, and the database blocks their data access as well.
+- The Supabase **secret key** is used only in the server-side `/api/register` route and is never sent to the browser.
+- Admins can't remove their own Admin role, so the system can't be left without an admin by accident.
+
+---
 
 ## Project structure
+
 ```
-src/app/            pages: / (schedule), /login, /profile, /search, /trainer, /admin
-src/app/api/        server route: register
-src/components/     Header, Modal, Toast, CrudSection, Providers (language + auth)
-src/lib/            api.ts (mode switch), supabaseApi.ts, demoApi.ts, types.ts,
-                    i18n.ts (kk/en/ru), validate.ts, format.ts
-supabase/           schema.sql, seed.sql
-docs/               technical documentation
+src/
+  app/
+    page.tsx              Schedule and booking
+    login/                Log in and registration
+    profile/              My Profile, cancellations
+    search/               Search
+    trainer/              Trainer's classes
+    admin/                Admin panel
+    api/register/         Server-side registration
+  components/             Header, dialogs, admin table editor, auth and language state
+  lib/
+    supabaseApi.ts        All calls to Supabase
+    demoApi.ts            Same logic in the browser (demo mode, no database)
+    i18n.ts               Kazakh / English / Russian texts
+    types.ts, validate.ts, format.ts
+supabase/
+  schema.sql              Tables, constraints, views, functions, security rules
+  seed.sql                Sample branches, rooms, trainers, classes and 7 days of sessions
 ```
 
-## Requirements coverage (practice_10)
+---
 
-| Req | How it is implemented | Where |
-|---|---|---|
-| **FR-01** Reject when full | `book_session()` locks the session row, counts non-cancelled bookings, returns **"Class is full"**. Admin sets capacity in the admin panel. | `schema.sql`, `/` |
-| **FR-02** No double booking | `UNIQUE (member_id, session_id)` + check in `book_session()` → **"You have already booked this class"** | `schema.sql` |
-| **FR-03** Offer alternatives | On full / already booked, a dialog lists up to 3 upcoming sessions of the same class with free places, each with a **Book** button | `src/app/page.tsx` |
-| **FR-04** Register / log in | Name + phone + password. Phone is normalised (`8 701…` → `+7701…`). Wrong password → **"Incorrect phone number or password"**. After registering the member is logged in and sent to the main page. | `/login`, `/api/register` |
-| **FR-05** My Profile | Name, phone, membership status (Active / Expired / Suspended), expiry date, upcoming bookings, history | `/profile` |
-| **FR-06** Cancellation rule | Free until 3 h before start. Later: warning + confirmation, booking marked `fee_forfeited`. The place is freed either way. | `cancel_booking()`, `/profile` |
-| **FR-07** kk / en / ru | Language switcher in the header. Saved in the browser (survives reload) and on the account (`members.preferred_language`, applied at next login). All messages, including database errors, are translated. | `src/lib/i18n.ts` |
-| **FR-08** Search | Search bar in the header: trainers (with upcoming sessions), branches, bookings. Members see only their own bookings, admins see all. No match → **"No results found"**. | `/search`, `v_bookings` |
-| **FR-09** Admin panel | Create / view / update / delete sessions, class types, trainers, branches, rooms; manage members (role, status, expiry); NFC check-in | `/admin` |
-| **FR-10** Roles | `members.role` = Member / Trainer / Admin. Pages redirect other roles to the main page; the database enforces the same rules (RLS policies, role checks in functions). Trainers see attendee names for their own classes only. | `useRequireRole`, `schema.sql` |
-| **NFR-01** Never overbook | Row lock in `book_session()`; admin cannot set capacity above the room size or below places already booked | `schema.sql` |
-| **NFR-02** Speed | Booking is one database call; indexes on `bookings.session_id`, `class_sessions.start_time`. Not load-tested. | |
-| **NFR-03** Security | Supabase Auth stores passwords as bcrypt hashes (demo mode: salted PBKDF2). Admin data and actions are blocked in the database for non-admins. | |
-| **NFR-04** Localisation | Kazakh and Russian dictionaries are typed against English, so the build fails if any UI string is missing | `i18n.ts` |
+## Running locally
 
-Class names, descriptions, branch and room names are **data**, shown as the admin typed them (not translated).
+Requirements: Node.js 20 or newer.
 
-## Run locally
 ```bash
 npm install
-npm run dev          # http://localhost:3000 (demo mode)
+npm run dev        # http://localhost:3000
 ```
-Demo accounts (demo mode only): Admin `+7 700 000 0001` / `admin123`, Trainer `+7 700 000 0002` / `trainer123`. Register any phone to act as a member.
 
-## Connect Supabase
-1. Create a project at supabase.com.
-2. SQL Editor: run `supabase/schema.sql`, then `supabase/seed.sql` (each once, on an empty project).
-3. Project Settings → API: copy the Project URL, the anon / publishable key and the **service_role** key.
-4. Copy `.env.example` to `.env.local` and fill in all three. The service_role key is used only by the server route `/api/register` and is never sent to the browser.
-   - Without the service_role key, registration falls back to a normal sign-up. Then turn **Authentication → Providers → Email → Confirm email** OFF, otherwise new members can't log in.
-5. `npm run dev`, register with your phone number, then make yourself admin (SQL Editor):
+Without environment variables, the app runs in **demo mode**: data is kept in the browser and two test accounts are available:
+- Admin `+7 700 000 0001` / `admin123`
+- Trainer `+7 700 000 0002` / `trainer123`
+
+### Connecting Supabase
+
+1. Create a Supabase project. In the **SQL Editor**, run `supabase/schema.sql`, then `supabase/seed.sql`.
+2. Create `.env.local` (see `.env.example`):
+
+   ```
+   NEXT_PUBLIC_SUPABASE_URL=https://<project>.supabase.co
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=<publishable / anon key>
+   SUPABASE_SERVICE_ROLE_KEY=<secret / service_role key>
+   ```
+3. Register in the app, then make yourself admin in the SQL Editor:
+
    ```sql
    update public.members set role = 'Admin' where phone_number = '+77011234567';
    ```
-   After that, give other people Admin / Trainer roles in **Admin panel → Members** (a Trainer must be linked to a trainer profile).
+   After that, assign roles in **Admin panel → Members**.
 
-**How phone login works:** Supabase Auth needs an email, so each phone is mapped to an internal address like `77011234567@phone.pulsegym.app` that never receives mail. If Supabase rejects that domain, set `NEXT_PUBLIC_AUTH_EMAIL_DOMAIN` to a domain you control. Password reset by SMS is not included.
+### Deploying
 
-## Deploy to Vercel
-1. Push this folder to a GitHub repo.
-2. vercel.com → Add New → Project → import the repo (framework: Next.js).
-3. Settings → Environment Variables: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`. Deploy.
+The project is deployed on **Vercel**, connected to this GitHub repository. Every push to `main` deploys automatically. The three environment variables above are set in Vercel → Settings → Environment Variables.
 
-## Corrections made to the earlier spec (Task 09)
-| Issue in the doc | What the MVP does |
-|---|---|
-| "Five tables", but the fixes add TRAINERS, CLASSES, READERS, ROOMS | 9 tables: members, branches, rooms, trainers, classes, class_sessions, bookings, readers, check_in_logs |
-| Member name is `fullname`, `full_name`, or `member_name` + `member_surname` | `member_name` + `member_surname` |
-| CLASS_SESSIONS shows no FK, but `branch_id` is one | FKs to branches, classes, trainers, rooms |
-| Problem 4 says duplicates aren't prevented, but the rules table already has `UNIQUE(member_id, session_id)` | Kept; re-booking after a cancel re-activates the cancelled row |
-| `membership_status = 'Expired'` goes stale | Only `Active` / `Suspended` stored; Expired is computed from `membership_expiry` |
-| `branch_id` and `room_id` on a session could disagree | Composite FK `(room_id, branch_id)` → rooms |
-| Room / trainer double-booking (Problem 5) | Exclusion constraints reject overlapping sessions |
-| `check_in_method` depends on the reader | Moved to READERS (linked to a branch); a reader can only check in sessions of its branch |
-| Front-desk role vs. FR-10's three roles | Check-in is done by the Admin role |
-| `phone_number` optional, but FR-04 logs in by phone | `phone_number NOT NULL UNIQUE` |
+---
 
-## Design notes
-- The `v_*` views run with the owner's rights and filter rows themselves (by `auth.uid()` / role). Supabase's linter may flag them as "security definer views"; that is intentional here.
-- Booking fee: there are no payments in the MVP. A late cancellation is recorded as `fee_forfeited = true` for billing to use later.
+## Limitations (MVP)
 
-## Not in the MVP
-- Payments, SMS verification / password reset, automatic No-show marking, real NFC hardware
-- New members get 30 days of membership (`handle_new_user` in `schema.sql`); change to your rule
+- No online payments. A late cancellation is recorded as `fee_forfeited` for future billing.
+- No SMS verification or password reset.
+- NFC check-in is simulated from the admin panel; no hardware integration yet.
+- Class descriptions and branch names are shown as entered and aren't translated.
+- New members receive a 30-day membership by default.
+
+---
+
+## Team
+
+Business Experts, KBTU:
+Dzhadrinova Diana · Pak Milana · Mamedova Mariya · Seitbek Arnur · Safiyulla Aizere
