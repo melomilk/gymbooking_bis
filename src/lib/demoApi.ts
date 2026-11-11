@@ -2,10 +2,10 @@
 // (localStorage). Used automatically when the Supabase env vars are not set.
 // Passwords are stored as salted PBKDF2 hashes even here (NFR-03).
 import type {
-  Api, AttendanceRow, Branch, BookingRow, ClassType, Entity, Me, MemberRow, Reader, Result, Room, RosterRow, Row, SessionRow, Trainer,
+  Api, AttendanceRow, CertificateFile, TrainerApplication, Branch, BookingRow, ClassType, Entity, Me, MemberRow, Reader, Result, Room, RosterRow, Row, SessionRow, Trainer,
 } from "./types";
-import { ENTITY_ID } from "./types";
-import { cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
+import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID } from "./types";
+import { checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
 import { FREE_CANCEL_MS } from "./format";
 
 const KEY = "gym-demo-v2";
@@ -20,7 +20,13 @@ type Store = {
   members: DMember[]; sessions: DSession[]; bookings: DBooking[]; readers: DReader[];
   checkIns: { check_in_id: number; booking_id: number; reader_id: string | null; is_manual?: boolean; check_in_time: string }[];
   current: number | null; seq: Record<string, number>;
+  // trainer sign-up (optional: stores saved before this feature don't have them)
+  applications?: DApplication[];
+  /** certificate path -> data URL (small files only; localStorage is ~5 MB) */
+  files?: Record<string, string>;
 };
+type DApplication = Omit<TrainerApplication, "member_fullname" | "phone_number">;
+const DEMO_FILE_LIMIT = 700 * 1024;
 
 export const DEMO_ACCOUNTS = [
   { role: "Admin", phone: "+7 700 000 0001", password: "admin123" },
@@ -251,6 +257,18 @@ function tableOf(st: Store, entity: Entity): Row[] {
 }
 
 // ---------- API ----------
+function vApplication(st: Store, a: DApplication): TrainerApplication {
+  const m = st.members.find((x) => x.member_id === a.member_id)!;
+  return { ...a, member_fullname: `${m.member_name} ${m.member_surname}`, phone_number: m.phone_number };
+}
+
+const readAsDataUrl = (f: File) => new Promise<string>((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(String(r.result));
+  r.onerror = () => rej(r.error);
+  r.readAsDataURL(f);
+});
+
 export const demoApi: Api = {
   mode: "demo",
 
@@ -507,5 +525,78 @@ export const demoApi: Api = {
           booked: count((x) => x !== "Cancelled"), attended: count((x) => x === "Attended"), no_show: count((x) => x === "No-show"),
         };
       });
+  },
+  // ---------- trainer sign-up (same rules as migration_trainer_signup.sql) ----------
+  async submitTrainerApplication(input, files) {
+    const err = checkTrainerApplication(input, files, { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES });
+    if (err) return no(err);
+    const st = await load();
+    const m = me(st);
+    if (!m) return no("not_signed_in");
+    if (m.role !== "Member") return no("already_trainer");
+    st.applications ??= [];
+    st.files ??= {};
+    if (st.applications.some((a) => a.member_id === m.member_id && a.status !== "Rejected")) return no("application_exists");
+
+    const certs: CertificateFile[] = [];
+    for (const f of files) {
+      const path = `demo/${m.member_id}/${Date.now()}-${certs.length}`;
+      // big files are only listed by name in demo mode, so the browser storage doesn't overflow
+      if (f.size <= DEMO_FILE_LIMIT) st.files[path] = await readAsDataUrl(f);
+      certs.push({ path, name: f.name.slice(0, 120) });
+    }
+    st.seq.applications = (st.seq.applications ?? 0) + 1;
+    st.applications.push({
+      application_id: st.seq.applications, member_id: m.member_id, email: input.email.trim(),
+      specialization: input.specialization.trim(), experience_years: input.experience_years, bio: input.bio.trim(),
+      certificates: certs, status: "Pending", reject_reason: null, created_at: nowIso(), reviewed_at: null, trainer_id: null,
+    });
+    save(st);
+    return ok("application_sent");
+  },
+
+  async myTrainerApplication() {
+    const st = await load();
+    const m = me(st);
+    if (!m) return null;
+    const mine = (st.applications ?? []).filter((a) => a.member_id === m.member_id)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return mine[0] ? vApplication(st, mine[0]) : null;
+  },
+
+  async listTrainerApplications() {
+    const st = await load();
+    if (!isAdmin(st)) return [];
+    return (st.applications ?? []).map((a) => vApplication(st, a))
+      .sort((a, b) => Number(b.status === "Pending") - Number(a.status === "Pending") || b.created_at.localeCompare(a.created_at));
+  },
+
+  async certificateUrl(path) {
+    const st = await load();
+    const m = me(st);
+    const owner = (st.applications ?? []).find((a) => a.certificates.some((c) => c.path === path));
+    if (!m || !owner || (m.role !== "Admin" && owner.member_id !== m.member_id)) return null;
+    return st.files?.[path] ?? null;
+  },
+
+  async reviewTrainerApplication(id, approve, reason) {
+    const st = await load();
+    if (!isAdmin(st)) return no("admin_only");
+    const a = (st.applications ?? []).find((x) => x.application_id === id);
+    if (!a) return no("application_not_found");
+    if (a.status !== "Pending") return no("application_not_pending");
+    if (!approve) {
+      Object.assign(a, { status: "Rejected", reject_reason: reason?.trim() || null, reviewed_at: nowIso() });
+      save(st);
+      return ok("application_rejected");
+    }
+    const m = st.members.find((x) => x.member_id === a.member_id)!;
+    if (m.role !== "Member") return no("already_trainer");
+    const trainerId = ++st.seq.trainers;
+    st.trainers.push({ trainer_id: trainerId, trainer_name: `${m.member_name} ${m.member_surname}`, phone: m.phone_number, email: a.email });
+    Object.assign(m, { role: "Trainer", trainer_id: trainerId });
+    Object.assign(a, { status: "Approved", reviewed_at: nowIso(), trainer_id: trainerId });
+    save(st);
+    return ok("application_approved");
   },
 };

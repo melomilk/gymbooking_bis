@@ -23,6 +23,12 @@ export default function SchedulePage() {
   const [branch, setBranch] = useState("all");
   const [cls, setCls] = useState("all");
   const [day, setDay] = useState("all");
+  const [appPending, setAppPending] = useState(false);
+
+  useEffect(() => {
+    if (me?.role !== "Member") { setAppPending(false); return; }
+    api.myTrainerApplication().then((a) => setAppPending(a?.status === "Pending")).catch(() => {});
+  }, [me]);
 
   const load = useCallback(async () => {
     const [s, b, mine] = await Promise.all([
@@ -77,6 +83,12 @@ export default function SchedulePage() {
         </div>
       )}
       {!me && !authLoading && <div className="notice"><Link href="/login">{t("notice_login_to_book")}</Link></div>}
+      {me?.role === "Trainer" && (
+        <div className="notice good">{t("trainer_home_note")} <Link href="/trainer">{t("trainer_home_link")}</Link></div>
+      )}
+      {appPending && (
+        <div className="notice">{t("app_pending_home")} <Link href="/profile#trainer-application">{t("app_view")}</Link></div>
+      )}
 
       <div className="filters">
         <select value={branch} onChange={(e) => setBranch(e.target.value)} aria-label={t("f_branch")}>

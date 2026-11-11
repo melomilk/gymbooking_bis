@@ -1,7 +1,9 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import type { Api, AttendanceRow, BookingRow, Entity, Result, Row } from "./types";
-import { ENTITY_ID } from "./types";
-import { cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
+import type { Api, AttendanceRow, BookingRow, CertificateFile, Entity, Result, Row, TrainerApplication } from "./types";
+import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID } from "./types";
+import { checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
+
+const CERT_BUCKET = "trainer-certificates";
 
 let client: SupabaseClient | null = null;
 function sb(): SupabaseClient {
@@ -206,4 +208,51 @@ export const supabaseApi: Api = {
       .lt("end_time", now()).order("start_time", { ascending: false }).limit(100);
     return (data ?? []) as AttendanceRow[];
   },
+
+  // ---------- trainer sign-up ----------
+  async submitTrainerApplication(input, files) {
+    const err = checkTrainerApplication(input, files, { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES });
+    if (err) return { ok: false, code: err };
+    const { data: u } = await sb().auth.getUser();
+    if (!u.user) return { ok: false, code: "not_signed_in" };
+
+    // 1) files -> private bucket, folder = auth uid (checked by the storage policy and by the function)
+    const uploaded: CertificateFile[] = [];
+    for (const f of files) {
+      const ext = (f.name.split(".").pop() || "bin").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5);
+      const path = `${u.user.id}/${Date.now()}-${crypto.randomUUID()}.${ext}`;
+      const { error } = await sb().storage.from(CERT_BUCKET).upload(path, f, { contentType: f.type, upsert: false });
+      if (error) return { ok: false, code: "upload_failed", message: error.message };
+      uploaded.push({ path, name: f.name.slice(0, 120) });
+    }
+    // 2) the application row
+    return rpc("submit_trainer_application", {
+      p_email: input.email.trim(), p_specialization: input.specialization.trim(),
+      p_experience_years: input.experience_years, p_bio: input.bio.trim(), p_certificates: uploaded,
+    });
+  },
+
+  async myTrainerApplication() {
+    const { data: s } = await sb().auth.getSession();
+    if (!s.session) return null;
+    const me = await supabaseApi.getMe();
+    if (!me) return null;
+    const { data } = await sb().from("v_trainer_applications").select("*")
+      .eq("member_id", me.member_id).order("created_at", { ascending: false }).limit(1);
+    return ((data ?? [])[0] as TrainerApplication | undefined) ?? null;
+  },
+
+  async listTrainerApplications() {
+    const { data } = await sb().from("v_trainer_applications").select("*").order("created_at", { ascending: false });
+    const rows = (data ?? []) as TrainerApplication[];
+    return rows.sort((a, b) => Number(b.status === "Pending") - Number(a.status === "Pending"));
+  },
+
+  async certificateUrl(path) {
+    const { data } = await sb().storage.from(CERT_BUCKET).createSignedUrl(path, 300);
+    return data?.signedUrl ?? null;
+  },
+
+  reviewTrainerApplication: (id, approve, reason) =>
+    rpc("review_trainer_application", { p_application_id: id, p_approve: approve, p_reason: reason ?? null }),
 };

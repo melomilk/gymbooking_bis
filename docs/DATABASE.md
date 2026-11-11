@@ -200,3 +200,28 @@ Supabase → SQL Editor
 3. Register in the app, then:
    update public.members set role = 'Admin' where phone_number = '+77011234567';
 ```
+
+
+## Trainer sign-up (`migration_trainer_signup.sql`)
+
+### `trainer_applications`
+| Column | Type | Rules |
+|---|---|---|
+| `application_id` | bigint | PK, identity |
+| `member_id` | bigint | FK → members (cascade) |
+| `email` | varchar(150) | NOT NULL, email format |
+| `specialization` | varchar(200) | NOT NULL |
+| `experience_years` | int | 0–60 |
+| `bio` | text | optional, ≤ 2000 chars |
+| `certificates` | jsonb | array of `{path, name}`, 1–5 items, every `path` in the applicant's own Storage folder |
+| `status` | varchar(10) | `Pending` / `Approved` / `Rejected` |
+| `reject_reason`, `reviewed_at`, `reviewed_by`, `trainer_id` | | filled by the admin's decision |
+
+A partial unique index allows one open (`Pending` or `Approved`) application per member;
+after a rejection a new one may be sent. RLS is on and table privileges are revoked:
+members read their own rows through `v_trainer_applications` (admins see all), and write only
+through `submit_trainer_application(...)`. `review_trainer_application(id, approve, reason)` is
+admin-only; approve inserts a `trainers` row and sets `members.role = 'Trainer'`, `trainer_id`.
+
+Certificates live in the private Storage bucket `trainer-certificates` (5 MB, PDF/JPG/PNG) under
+`<auth uid>/…`. Policies: a user may upload only into their own folder; read access is the owner or an admin.

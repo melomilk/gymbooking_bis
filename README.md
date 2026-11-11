@@ -142,6 +142,7 @@ src/
 supabase/
   schema.sql              Tables, constraints, views, functions, security rules
   seed.sql                Sample branches, rooms, trainers, classes and 7 days of sessions
+  migration_trainer_signup.sql  Trainer applications, certificate storage, approve / reject
 ```
 
 ---
@@ -161,7 +162,8 @@ Without environment variables, the app runs in **demo mode**: data is kept in th
 
 ### Connecting Supabase
 
-1. Create a Supabase project. In the **SQL Editor**, run `supabase/schema.sql`, then `supabase/seed.sql`.
+1. Create a Supabase project. In the **SQL Editor**, run `supabase/schema.sql`, then `supabase/seed.sql`,
+   then `supabase/migration_trainer_signup.sql`.
 2. Create `.env.local` (see `.env.example`):
 
    ```
@@ -175,6 +177,20 @@ Without environment variables, the app runs in **demo mode**: data is kept in th
    update public.members set role = 'Admin' where phone_number = '+77011234567';
    ```
    After that, assign roles in **Admin panel → Members**.
+
+### Trainer sign-up
+
+On the registration page a person chooses **Member** or **Trainer**. A trainer also gives an email,
+specialization, years of experience, an optional bio and 1–5 certificates (PDF/JPG/PNG, up to 5 MB each).
+
+- The account is created as a normal **Member**; the certificates go to the private Storage bucket
+  `trainer-certificates` and an application with status *Pending* is saved.
+- The applicant can use the site as a client meanwhile and sees the status in **My Profile**.
+- An admin opens **Admin panel → Trainer applications**, opens the certificates (5-minute links),
+  and approves or rejects with a reason. Approve creates the trainer profile and switches the role to
+  **Trainer**; after a rejection the person can apply again from the profile.
+- A user can never make themselves a Trainer: the role only changes inside the admin-only
+  `review_trainer_application` function.
 
 ### Deploying
 
