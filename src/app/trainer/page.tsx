@@ -31,7 +31,7 @@ export default function TrainerPage() {
               </div>
               <div className="small"><b>{t("attendees")}:</b>{" "}
                 {people.length === 0 ? <span className="muted">{t("no_attendees")}</span>
-                  : people.map((p) => `${p.member_fullname}${p.booking_status === "Attended" ? " ✓" : ""}`).join(", ")}
+                  : people.map((p) => `${p.member_fullname}${p.booking_status === "Attended" ? " ✓" : p.booking_status === "No-show" ? ` (${t("bs_No-show")})` : ""}`).join(", ")}
               </div>
             </li>
           );

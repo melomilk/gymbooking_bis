@@ -17,6 +17,8 @@ Members register with a phone number, browse the schedule and book a place. The 
 - When a booking is rejected, get up to 3 other times of the same class to book instead
 - My Profile: name, membership status, expiry date, upcoming bookings and history
 - Cancel for free until 3 hours before the class. Later cancellations need confirmation and forfeit the booking fee.
+- Missing a class without cancelling marks the booking as No-show and forfeits the fee
+- My progress: classes attended, missed and attendance rate
 - Search trainers, branches and own bookings
 - Interface in Kazakh, English and Russian. The choice is saved on the account.
 
@@ -28,6 +30,8 @@ Members register with a phone number, browse the schedule and book a place. The 
 - Manage members: role (Member / Trainer / Admin), membership status and expiry
 - Search all bookings
 - NFC check-in: record a member's arrival and mark the booking as Attended
+- Manual check-in when the NFC reader fails (after the class has started)
+- Attendance report: booked, came and missed per finished class, with attendance rate
 
 ---
 

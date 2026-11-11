@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import type { Api, BookingRow, Entity, Result, Row } from "./types";
+import type { Api, AttendanceRow, BookingRow, Entity, Result, Row } from "./types";
 import { ENTITY_ID } from "./types";
 import { cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
 
@@ -33,6 +33,11 @@ export function dbErrorCode(e: { code?: string; message?: string } | null): stri
 }
 
 const fail = (e: { code?: string; message?: string } | null): Result => ({ ok: false, code: dbErrorCode(e), message: e?.message });
+
+/** Turns past 'Confirmed' bookings into 'No-show' before any booking list is read. */
+async function markNoShows() {
+  await sb().rpc("mark_no_shows"); // errors ignored: reading must still work
+}
 
 async function rpc(fn: string, args: Record<string, unknown>): Promise<Result> {
   const { data, error } = await sb().rpc(fn, args);
@@ -130,6 +135,7 @@ export const supabaseApi: Api = {
   },
 
   async myBookings(memberId) {
+    await markNoShows();
     const { data } = await sb().from("v_bookings").select("*").eq("member_id", memberId).order("start_time", { ascending: false });
     return (data ?? []) as BookingRow[];
   },
@@ -137,6 +143,7 @@ export const supabaseApi: Api = {
   async searchBookings(q) {
     const c = cleanQuery(q);
     if (!c) return [];
+    await markNoShows();
     // v_bookings itself limits members to their own rows (admins see all)
     const { data } = await sb().from("v_bookings").select("*")
       .or(`class_name.ilike.*${c}*,trainer_name.ilike.*${c}*,branch_name.ilike.*${c}*,member_fullname.ilike.*${c}*`)
@@ -148,6 +155,7 @@ export const supabaseApi: Api = {
   cancel: (bookingId, acceptFee = false) => rpc("cancel_booking", { p_booking_id: bookingId, p_accept_fee: acceptFee }),
 
   async trainerRoster() {
+    await markNoShows();
     const { data } = await sb().from("v_trainer_roster").select("*")
       .gt("end_time", new Date(Date.now() - 12 * 3600_000).toISOString()).order("start_time");
     return data ?? [];
@@ -176,8 +184,9 @@ export const supabaseApi: Api = {
   },
 
   async allBookings() {
+    await markNoShows();
     const { data } = await sb().from("v_bookings").select("*")
-      .in("booking_status", ["Confirmed", "Attended"])
+      .in("booking_status", ["Confirmed", "Attended", "No-show"])
       .gt("end_time", new Date(Date.now() - 12 * 3600_000).toISOString())
       .order("start_time");
     return (data ?? []) as BookingRow[];
@@ -189,4 +198,12 @@ export const supabaseApi: Api = {
   },
 
   checkIn: (bookingId, readerId) => rpc("check_in_booking", { p_booking_id: bookingId, p_reader_id: readerId }),
+  manualCheckIn: (bookingId) => rpc("manual_check_in", { p_booking_id: bookingId }),
+
+  async attendanceReport() {
+    await markNoShows(); // so finished classes already show their no-shows
+    const { data } = await sb().from("v_attendance_report").select("*")
+      .lt("end_time", now()).order("start_time", { ascending: false }).limit(100);
+    return (data ?? []) as AttendanceRow[];
+  },
 };

@@ -107,7 +107,9 @@ create table public.check_in_logs (
   check_in_id    bigint generated always as identity primary key,
   booking_id     bigint not null unique references public.bookings(booking_id),
   check_in_time  timestamptz not null default now(),
-  reader_id      varchar(20) not null references public.readers(reader_id)
+  reader_id      varchar(20) references public.readers(reader_id),
+  is_manual      boolean not null default false,       -- Plan B: NFC failed, admin marked it
+  check (is_manual or reader_id is not null)           -- an NFC check-in always has a reader
 );
 
 -- Session capacity: never above the room's size, never below the number of
@@ -238,6 +240,21 @@ left join public.bookings b on b.session_id = s.session_id and b.booking_status 
 left join public.members  m on m.member_id  = b.member_id
 where s.trainer_id = (select me.trainer_id from public.members me
                        where me.auth_user_id = auth.uid() and me.role = 'Trainer');
+
+-- Attendance report (admin only): per session, how many booked, came and
+-- missed. The attendance rate is attended / (attended + no_show).
+create view public.v_attendance_report as
+select s.session_id, c.class_name, t.trainer_name, br.branch_name, s.start_time, s.end_time, s.capacity,
+       count(b.booking_id) filter (where b.booking_status <> 'Cancelled')::int as booked,
+       count(b.booking_id) filter (where b.booking_status = 'Attended')::int  as attended,
+       count(b.booking_id) filter (where b.booking_status = 'No-show')::int   as no_show
+from public.class_sessions s
+join public.classes  c  on c.class_id   = s.class_id
+join public.trainers t  on t.trainer_id = s.trainer_id
+join public.branches br on br.branch_id = s.branch_id
+left join public.bookings b on b.session_id = s.session_id
+where public.is_admin()
+group by s.session_id, c.class_name, t.trainer_name, br.branch_name;
 
 create view public.v_readers as
 select r.reader_id, r.branch_id, br.branch_name, r.check_in_method, r.location_note
@@ -385,6 +402,56 @@ begin
   return public.result(true, 'checked_in', 'Check-in recorded.');
 end $$;
 
+-- NO-SHOW: a booking still 'Confirmed' after its class has ended means the
+-- member never checked in, so it becomes 'No-show' and the booking fee is
+-- forfeited (same rule as a late cancellation). Only the time decides, so any
+-- logged-in user may trigger it; the app calls it before reading bookings.
+create function public.mark_no_shows() returns int
+language plpgsql security definer set search_path = public as $$
+declare v_count int;
+begin
+  update public.bookings b
+     set booking_status = 'No-show', fee_forfeited = true
+    from public.class_sessions s
+   where s.session_id = b.session_id
+     and b.booking_status = 'Confirmed'
+     and s.end_time < now();
+  get diagnostics v_count = row_count;
+  return v_count;
+end $$;
+
+-- MANUAL CHECK-IN (Plan B when the NFC reader fails). Admin only; the class
+-- must have started. Works for 'Confirmed' and for 'No-show' (the member did
+-- come, the reader just didn't record it), so the forfeited fee is returned.
+create function public.manual_check_in(p_booking_id bigint) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_b     public.bookings%rowtype;
+  v_start timestamptz;
+begin
+  if not public.is_admin() then
+    return public.result(false, 'admin_only', 'Only admins can record check-ins.');
+  end if;
+  select * into v_b from public.bookings where booking_id = p_booking_id for update;
+  if not found then
+    return public.result(false, 'booking_not_found', 'Booking not found.');
+  end if;
+  if v_b.booking_status = 'Attended' then
+    return public.result(false, 'already_checked_in', 'Already checked in.');
+  end if;
+  if v_b.booking_status not in ('Confirmed', 'No-show') then
+    return public.result(false, 'not_checkinable', 'This booking cannot be checked in.');
+  end if;
+  select start_time into v_start from public.class_sessions where session_id = v_b.session_id;
+  if v_start > now() then
+    return public.result(false, 'class_not_started', 'The class has not started yet.');
+  end if;
+
+  insert into public.check_in_logs (booking_id, reader_id, is_manual) values (p_booking_id, null, true);
+  update public.bookings set booking_status = 'Attended', fee_forfeited = false where booking_id = p_booking_id;
+  return public.result(true, 'checked_in_manual', 'Marked as attended manually.');
+end $$;
+
 -- FR-07: remember the member's language for the next login.
 create function public.set_my_language(p_lang text) returns jsonb
 language plpgsql security definer set search_path = public as $$
@@ -446,14 +513,19 @@ revoke all on function public.book_session(bigint)                from public, a
 revoke all on function public.cancel_booking(bigint, boolean)     from public, anon;
 revoke all on function public.check_in_booking(bigint, text)      from public, anon;
 revoke all on function public.set_my_language(text)               from public, anon;
+revoke all on function public.mark_no_shows()                      from public, anon;
+revoke all on function public.manual_check_in(bigint)               from public, anon;
 grant execute on function public.book_session(bigint)             to authenticated;
 grant execute on function public.cancel_booking(bigint, boolean)  to authenticated;
 grant execute on function public.check_in_booking(bigint, text)   to authenticated;
 grant execute on function public.set_my_language(text)            to authenticated;
+grant execute on function public.mark_no_shows()                   to authenticated;
+grant execute on function public.manual_check_in(bigint)            to authenticated;
 
 revoke all on public.v_me, public.v_bookings, public.v_trainer_roster, public.v_readers from anon;
 grant select on public.v_sessions, public.v_trainers to anon, authenticated;
-grant select on public.v_me, public.v_bookings, public.v_trainer_roster, public.v_readers to authenticated;
+grant select on public.v_me, public.v_bookings, public.v_trainer_roster, public.v_readers,
+                public.v_attendance_report to authenticated;
 
 -- Catalog tables: RLS above decides who may actually read/write.
 revoke all on public.branches, public.rooms, public.trainers, public.classes, public.class_sessions,

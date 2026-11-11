@@ -5,19 +5,20 @@ import { useRequireRole, useT } from "@/components/Providers";
 import CrudSection, { type CrudConfig, type Form } from "@/components/CrudSection";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import { dayKey, fmtDate, fmtDayShort, fmtTime, toIso } from "@/lib/format";
-import type { BookingRow, Branch, ClassType, Entity, MemberRow, Reader, Result, Room, Row, SessionRow, Trainer } from "@/lib/types";
+import type { AttendanceRow, BookingRow, Branch, ClassType, Entity, MemberRow, Reader, Result, Room, Row, SessionRow, Trainer } from "@/lib/types";
 import type { Key } from "@/lib/i18n";
+import { attendanceRate, fmtRate, LOW_ATTENDANCE } from "@/lib/stats";
 
-type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "checkin";
+type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "checkin" | "report";
 const TABS: { id: Tab; label: Key }[] = [
   { id: "sessions", label: "tab_sessions" }, { id: "classes", label: "tab_classes" }, { id: "trainers", label: "tab_trainers" },
   { id: "branches", label: "tab_branches" }, { id: "rooms", label: "tab_rooms" }, { id: "members", label: "tab_members" },
-  { id: "checkin", label: "tab_checkin" },
+  { id: "checkin", label: "tab_checkin" }, { id: "report", label: "tab_report" },
 ];
 
 type Data = {
   sessions: SessionRow[]; classes: ClassType[]; trainers: Trainer[]; branches: Branch[]; rooms: Room[];
-  members: MemberRow[]; bookings: BookingRow[]; readers: Reader[];
+  members: MemberRow[]; bookings: BookingRow[]; readers: Reader[]; report: AttendanceRow[];
 };
 
 const addMinutes = (hhmm: string, mins: number) => {
@@ -39,12 +40,12 @@ export default function AdminPage() {
   const [toast, setToast] = useState<ToastMsg>(null);
 
   const load = useCallback(async () => {
-    const [sessions, classes, trainers, branches, rooms, members, bookings, readers] = await Promise.all([
+    const [sessions, classes, trainers, branches, rooms, members, bookings, readers, report] = await Promise.all([
       api.listSessions({ includePast: true }), api.adminList("classes"), api.adminList("trainers"), api.adminList("branches"),
-      api.adminList("rooms"), api.adminList("members"), api.allBookings(), api.listReaders(),
+      api.adminList("rooms"), api.adminList("members"), api.allBookings(), api.listReaders(), api.attendanceReport(),
     ]);
     setData({ sessions, classes: classes as ClassType[], trainers: trainers as Trainer[], branches: branches as Branch[],
-      rooms: rooms as Room[], members: members as MemberRow[], bookings, readers });
+      rooms: rooms as Room[], members: members as MemberRow[], bookings, readers, report });
     setReaderId((cur) => cur || readers[0]?.reader_id || "");
   }, []);
 
@@ -231,11 +232,14 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {tab !== "checkin" ? (
+      {tab === "report" ? (
+        <AttendanceReport rows={data.report} />
+      ) : tab !== "checkin" ? (
         <CrudSection key={tab} cfg={configs[tab]!} onResult={onResult} />
       ) : (
         <>
           <p className="muted small">{t("checkin_desc")}</p>
+          <p className="muted small">{t("manual_desc")}</p>
           <div className="filters">
             <select value={readerId} onChange={(e) => setReaderId(e.target.value)} aria-label={t("reader")}>
               {data.readers.map((r) => <option key={r.reader_id} value={r.reader_id}>{r.reader_id} · {r.branch_name} ({r.check_in_method})</option>)}
@@ -253,6 +257,10 @@ export default function AdminPage() {
                     <span className={`pill ${b.booking_status.toLowerCase()}`}>{t(`bs_${b.booking_status}`)}</span>
                     <button className="btn" disabled={b.booking_status !== "Confirmed" || !readerId}
                       onClick={async () => onResult(await api.checkIn(b.booking_id, readerId))}>{t("tap")}</button>
+                    {/* Plan B: NFC failed. Only after the class has started (Task 7: no "Attended" for a future class). */}
+                    {b.booking_status !== "Attended" && new Date(b.start_time).getTime() <= now && (
+                      <button className="btn ghost" onClick={async () => onResult(await api.manualCheckIn(b.booking_id))}>{t("manual_checkin")}</button>
+                    )}
                   </div>
                 </li>
               ))}
@@ -261,6 +269,48 @@ export default function AdminPage() {
         </>
       )}
       <Toast msg={toast} onDone={() => setToast(null)} />
+    </>
+  );
+}
+
+// ---------- Attendance report: finished classes, came vs. missed ----------
+function AttendanceReport({ rows }: { rows: AttendanceRow[] }) {
+  const { t, lang } = useT();
+  if (rows.length === 0) return <p className="muted">{t("report_empty")}</p>;
+
+  const attended = rows.reduce((sum, r) => sum + r.attended, 0);
+  const noShow = rows.reduce((sum, r) => sum + r.no_show, 0);
+  return (
+    <>
+      <p className="muted small">{t("report_desc")}</p>
+      <div className="notice">
+        <b>{t("report_total", { rate: fmtRate(attendanceRate(attended, noShow)), attended, no_show: noShow })}</b>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr>
+            <th>{t("f_date")}</th><th>{t("f_class")}</th><th>{t("f_trainer")}</th><th>{t("f_branch")}</th>
+            <th>{t("booked_col")}</th><th>{t("col_attended")}</th><th>{t("col_no_show")}</th><th>{t("col_rate")}</th>
+          </tr></thead>
+          <tbody>
+            {rows.map((r) => {
+              const rate = attendanceRate(r.attended, r.no_show);
+              return (
+                <tr key={r.session_id}>
+                  <td className="nowrap">{fmtDayShort(r.start_time, lang)}, {fmtTime(r.start_time)}</td>
+                  <td><b>{r.class_name}</b></td>
+                  <td>{r.trainer_name}</td>
+                  <td>{r.branch_name}</td>
+                  <td>{r.booked} / {r.capacity}</td>
+                  <td>{r.attended}</td>
+                  <td>{r.no_show}</td>
+                  <td className={rate !== null && rate < LOW_ATTENDANCE ? "bad-text" : ""}><b>{fmtRate(rate)}</b></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }

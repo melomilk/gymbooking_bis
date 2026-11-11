@@ -8,6 +8,7 @@ import Toast, { type ToastMsg } from "@/components/Toast";
 import Modal from "@/components/Modal";
 import { FREE_CANCEL_MS, fmtDate, fmtDayShort, fmtTime } from "@/lib/format";
 import type { BookingRow } from "@/lib/types";
+import { attendanceRate, fmtRate } from "@/lib/stats";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -46,6 +47,11 @@ export default function ProfilePage() {
     .sort((a, b) => a.start_time.localeCompare(b.start_time));
   const history = list.filter((b) => !upcoming.includes(b));
 
+  // Progress: came vs. missed. Cancelled bookings don't count.
+  const attended = list.filter((b) => b.booking_status === "Attended").length;
+  const missed = list.filter((b) => b.booking_status === "No-show").length;
+  const rate = attendanceRate(attended, missed);
+
   const row = (b: BookingRow, canCancel: boolean) => {
     const freeUntil = new Date(new Date(b.start_time).getTime() - FREE_CANCEL_MS);
     const isLate = freeUntil.getTime() <= now;
@@ -80,6 +86,17 @@ export default function ProfilePage() {
         <div><dt>{t("expiry_date")}</dt><dd>{fmtDate(me.membership_expiry, lang)}</dd></div>
         {me.role !== "Member" && <div><dt>{t("role")}</dt><dd>{t(`role_${me.role}`)}</dd></div>}
       </dl>
+
+      {attended + missed > 0 && (
+        <>
+          <h2>{t("my_progress")}</h2>
+          <dl className="profile" id="progress">
+            <div><dt>{t("stat_attended")}</dt><dd className="good-text">{attended}</dd></div>
+            <div><dt>{t("stat_missed")}</dt><dd>{missed}</dd></div>
+            <div><dt>{t("stat_rate")}</dt><dd>{fmtRate(rate)}</dd></div>
+          </dl>
+        </>
+      )}
 
       <h2>{t("upcoming_bookings")}</h2>
       {upcoming.length === 0
