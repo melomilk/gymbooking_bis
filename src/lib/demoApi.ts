@@ -2,7 +2,7 @@
 // (localStorage). Used automatically when the Supabase env vars are not set.
 // Passwords are stored as salted PBKDF2 hashes even here (NFR-03).
 import type {
-  Api, Branch, BookingRow, ClassType, Entity, Me, MemberRow, Reader, Result, Room, RosterRow, Row, SessionRow, Trainer,
+  Api, AttendanceRow, Branch, BookingRow, ClassType, Entity, Me, MemberRow, Reader, Result, Room, RosterRow, Row, SessionRow, Trainer,
 } from "./types";
 import { ENTITY_ID } from "./types";
 import { cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
@@ -18,7 +18,7 @@ type DReader = { reader_id: string; branch_id: number; check_in_method: string }
 type Store = {
   branches: Branch[]; rooms: Room[]; trainers: Trainer[]; classes: ClassType[];
   members: DMember[]; sessions: DSession[]; bookings: DBooking[]; readers: DReader[];
-  checkIns: { check_in_id: number; booking_id: number; reader_id: string; check_in_time: string }[];
+  checkIns: { check_in_id: number; booking_id: number; reader_id: string | null; is_manual?: boolean; check_in_time: string }[];
   current: number | null; seq: Record<string, number>;
 };
 
@@ -102,11 +102,31 @@ async function seed(): Promise<Store> {
   return st;
 }
 
+/** Same rule as mark_no_shows() in schema.sql: a booking still 'Confirmed'
+ *  after its class has ended becomes 'No-show' and the fee is forfeited. */
+function markNoShows(st: Store): boolean {
+  let changed = false;
+  for (const b of st.bookings) {
+    if (b.booking_status !== "Confirmed") continue;
+    const s = st.sessions.find((x) => x.session_id === b.session_id);
+    if (s && new Date(s.end_time).getTime() < Date.now()) {
+      b.booking_status = "No-show";
+      b.fee_forfeited = true;
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 let seeding: Promise<Store> | null = null;
 async function load(): Promise<Store> {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return JSON.parse(raw) as Store;
+    if (raw) {
+      const st = JSON.parse(raw) as Store;
+      if (markNoShows(st)) save(st);
+      return st;
+    }
   } catch { /* storage unavailable */ }
   if (!seeding) seeding = seed().then((s) => { save(s); return s; });
   const s = await seeding;
@@ -427,7 +447,7 @@ export const demoApi: Api = {
     if (!isAdmin(st)) return [];
     const cutoff = Date.now() - 12 * 3600_000;
     return visibleBookings(st)
-      .filter((b) => (b.booking_status === "Confirmed" || b.booking_status === "Attended") && new Date(b.end_time).getTime() > cutoff)
+      .filter((b) => b.booking_status !== "Cancelled" && new Date(b.end_time).getTime() > cutoff)
       .sort((a, b) => a.start_time.localeCompare(b.start_time));
   },
 
@@ -453,5 +473,39 @@ export const demoApi: Api = {
     b.booking_status = "Attended";
     save(st);
     return ok("checked_in");
+  },
+
+  async manualCheckIn(bookingId) {
+    const st = await load();
+    if (!isAdmin(st)) return no("admin_only");
+    const b = st.bookings.find((x) => x.booking_id === bookingId);
+    if (!b) return no("booking_not_found");
+    if (b.booking_status === "Attended") return no("already_checked_in");
+    if (b.booking_status !== "Confirmed" && b.booking_status !== "No-show") return no("not_checkinable");
+    const s = st.sessions.find((x) => x.session_id === b.session_id)!;
+    if (new Date(s.start_time).getTime() > Date.now()) return no("class_not_started");
+    st.checkIns.push({ check_in_id: ++st.seq.checkIns, booking_id: b.booking_id, reader_id: null, is_manual: true, check_in_time: nowIso() });
+    Object.assign(b, { booking_status: "Attended", fee_forfeited: false });
+    save(st);
+    return ok("checked_in_manual");
+  },
+
+  async attendanceReport() {
+    const st = await load();
+    if (!isAdmin(st)) return [];
+    return st.sessions
+      .filter((s) => new Date(s.end_time).getTime() < Date.now())
+      .sort((a, b) => b.start_time.localeCompare(a.start_time))
+      .slice(0, 100)
+      .map<AttendanceRow>((s) => {
+        const v = vSession(st, s);
+        const bs = st.bookings.filter((b) => b.session_id === s.session_id);
+        const count = (f: (status: string) => boolean) => bs.filter((b) => f(b.booking_status)).length;
+        return {
+          session_id: s.session_id, class_name: v.class_name, trainer_name: v.trainer_name, branch_name: v.branch_name,
+          start_time: s.start_time, end_time: s.end_time, capacity: s.capacity,
+          booked: count((x) => x !== "Cancelled"), attended: count((x) => x === "Attended"), no_show: count((x) => x === "No-show"),
+        };
+      });
   },
 };

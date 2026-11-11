@@ -38,7 +38,7 @@ select, input { background: var(--panel); color: var(--text); border: 1px solid 
 .bar { height: 6px; background: var(--panel2); border-radius: 99px; margin: .6rem 0 .5rem; overflow: hidden; }
 .bar div { height: 100%; background: var(--good); } .bar div.full { background: var(--bad); }
 .card-bottom { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
-.bad-text { color: var(--bad); } .warn-text { color: var(--warn); }
+.bad-text { color: var(--bad); } .good-text { color: var(--good); } .warn-text { color: var(--warn); }
 .notice { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--brand); padding: .7rem .9rem; border-radius: 8px; margin: .8rem 0; }
 .notice.bad { border-left-color: var(--bad); } .notice.good { border-left-color: var(--good); }
 .auth { max-width: 420px; margin: 2rem auto; }

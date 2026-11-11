@@ -69,6 +69,13 @@ export type RosterRow = {
   booking_id: number | null; booking_status: BookingStatus | null; member_fullname: string | null;
 };
 
+/** One finished session in the attendance report (v_attendance_report). */
+export type AttendanceRow = {
+  session_id: number; class_name: string; trainer_name: string; branch_name: string;
+  start_time: string; end_time: string; capacity: number;
+  booked: number; attended: number; no_show: number;
+};
+
 export type Reader = { reader_id: string; branch_id: number; branch_name: string; check_in_method: string };
 
 export type RegisterInput = { name: string; surname: string; phone: string; password: string; lang: Lang };
@@ -145,7 +152,7 @@ export interface Api {
   adminUpdate(entity: Entity, id: number, row: Row): Promise<Result>;
   /** Codes: `deleted`, `in_use` (still referenced), `forbidden`. */
   adminDelete(entity: Entity, id: number): Promise<Result>;
-  /** Confirmed and attended bookings from the last 12 h onward, for check-in. */
+  /** Confirmed, attended and no-show bookings from the last 12 h onward, for check-in. */
   allBookings(): Promise<BookingRow[]>;
   listReaders(): Promise<Reader[]>;
   /**
@@ -154,4 +161,13 @@ export interface Api {
    * `unknown_reader`, `wrong_branch_reader`, `admin_only`.
    */
   checkIn(bookingId: number, readerId: string): Promise<Result>;
+  /**
+   * Plan B when the NFC reader fails: the admin marks a `Confirmed` or `No-show`
+   * booking as `Attended` after the class has started (a forfeited fee is returned).
+   * Codes: `checked_in_manual`, `already_checked_in`, `not_checkinable`,
+   * `class_not_started`, `booking_not_found`, `admin_only`.
+   */
+  manualCheckIn(bookingId: number): Promise<Result>;
+  /** Finished sessions with booked / attended / no-show counts, newest first (admin only). */
+  attendanceReport(): Promise<AttendanceRow[]>;
 }

@@ -113,9 +113,12 @@ re-uses the same row. Index: `session_id`.
 | `check_in_id` | bigint | PK, identity |
 | `booking_id` | bigint | FK → bookings, UNIQUE (one check-in per booking) |
 | `check_in_time` | timestamptz | default `now()` |
-| `reader_id` | varchar(20) | FK → readers |
+| `reader_id` | varchar(20) | FK → readers; empty only for a manual check-in |
+| `is_manual` | boolean | default `false`; `true` when an admin marked it by hand (NFC failed). `CHECK (is_manual OR reader_id IS NOT NULL)` |
 
 ## Views
+
+- `v_attendance_report` (admin only): per session `booked`, `attended`, `no_show`. Attendance rate = attended / (attended + no_show); cancelled bookings don't count.
 
 Views run with the owner's rights and filter rows themselves.
 

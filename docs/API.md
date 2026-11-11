@@ -172,3 +172,28 @@ Every code has a translation key `code_<code>` in `src/lib/i18n.ts` (kk / en / r
 3. For a rule that must hold under concurrency, write a SQL function in
    `schema.sql` that returns `public.result(ok, code, message)`.
 4. Add `code_<code>` to all three dictionaries in `i18n.ts`.
+
+## No-show rule
+
+A booking that is still `Confirmed` when its class has ended becomes `No-show`
+and `fee_forfeited = true` (the member neither came nor cancelled).
+
+- Database: `public.mark_no_shows()` (returns how many rows changed). The app
+  calls it before every booking list (`myBookings`, `searchBookings`,
+  `trainerRoster`, `allBookings`). With pg_cron it can also run on a schedule
+  (see `supabase/migration_no_show.sql`).
+- Demo mode: the same rule runs every time the store is loaded.
+- Check-in is possible while the booking is `Confirmed`, i.e. until the class
+  ends; after that the booking is `No-show` and `not_checkinable`.
+
+## Attendance report and manual check-in
+
+- `attendanceReport()` reads `v_attendance_report` (admin only): finished sessions,
+  newest first, with `booked`, `attended`, `no_show`. The rate is computed in
+  `src/lib/stats.ts` (`attendance / (attended + no_show)`); below 70 % it is shown in red.
+- `manualCheckIn(bookingId)` calls `manual_check_in()`: Plan B when the NFC reader
+  fails. Admin only, only after the class has started, for `Confirmed` or `No-show`
+  bookings. Writes a `check_in_logs` row with `is_manual = true` and no reader, sets
+  `Attended` and returns the forfeited fee. Codes: `checked_in_manual`,
+  `already_checked_in`, `not_checkinable`, `class_not_started`, `booking_not_found`, `admin_only`.
+- My Profile shows the member's own progress: classes attended, missed and the rate.
