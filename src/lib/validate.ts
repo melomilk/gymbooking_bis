@@ -28,3 +28,23 @@ export function phoneToAuthEmail(phone: string): string {
 export function cleanQuery(q: string): string {
   return (q || "").replace(/[,()*%\\:."']/g, " ").trim().slice(0, 60);
 }
+
+export function validEmail(s: string): boolean {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test((s || "").trim());
+}
+
+/** Checks the trainer application before anything is uploaded. Returns an error code or null. */
+export function checkTrainerApplication(
+  i: { email: string; specialization: string; experience_years: number; bio: string },
+  files: { size: number; type: string }[],
+  limits: { maxFiles: number; maxBytes: number; types: string[] },
+): string | null {
+  if (!validEmail(i.email)) return "invalid_email";
+  if (!i.specialization.trim()) return "required";
+  if (!Number.isInteger(i.experience_years) || i.experience_years < 0 || i.experience_years > 60) return "invalid_value";
+  if (i.bio.length > 2000) return "invalid_value";
+  if (files.length < 1 || files.length > limits.maxFiles) return "certificates_required";
+  if (files.some((f) => !limits.types.includes(f.type))) return "bad_file_type";
+  if (files.some((f) => f.size > limits.maxBytes)) return "file_too_large";
+  return null;
+}

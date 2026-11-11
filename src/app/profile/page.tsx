@@ -6,24 +6,44 @@ import { api } from "@/lib/api";
 import { useAuth, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import Modal from "@/components/Modal";
-import { FREE_CANCEL_MS, fmtDate, fmtDayShort, fmtTime } from "@/lib/format";
-import type { BookingRow } from "@/lib/types";
+import { FREE_CANCEL_MS, fmtDate, fmtDateTime, fmtDayShort, fmtTime } from "@/lib/format";
+import type { BookingRow, Result, TrainerApplication } from "@/lib/types";
+import { TrainerApplyForm } from "@/components/TrainerFields";
 import { attendanceRate, fmtRate } from "@/lib/stats";
 
 export default function ProfilePage() {
   const router = useRouter();
-  const { me, loading: authLoading } = useAuth();
+  const { me, loading: authLoading, refresh } = useAuth();
   const { t, tr, lang } = useT();
   const [list, setList] = useState<BookingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<ToastMsg>(null);
   const [confirmLate, setConfirmLate] = useState<BookingRow | null>(null);
+  const [app, setApp] = useState<TrainerApplication | null>(null);
+  const [appError, setAppError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!me) return;
-    setList(await api.myBookings(me.member_id));
+    const [bookings, application] = await Promise.all([api.myBookings(me.member_id), api.myTrainerApplication()]);
+    setList(bookings);
+    setApp(application);
     setLoading(false);
   }, [me]);
+
+  // registration as trainer created the account but the application failed
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get("app_error");
+    if (!code) return;
+    setAppError(tr({ code }));
+    window.history.replaceState(null, "", "/profile");
+  }, [tr]);
+
+  async function applicationSent(r: Result) {
+    setAppError(null);
+    setToast({ ok: r.ok, text: tr(r) });
+    await refresh();
+    load();
+  }
 
   useEffect(() => {
     if (authLoading) return;
@@ -87,6 +107,8 @@ export default function ProfilePage() {
         {me.role !== "Member" && <div><dt>{t("role")}</dt><dd>{t(`role_${me.role}`)}</dd></div>}
       </dl>
 
+      <TrainerApplicationBlock app={app} isMember={me.role === "Member"} error={appError} onSent={applicationSent} />
+
       {attended + missed > 0 && (
         <>
           <h2>{t("my_progress")}</h2>
@@ -115,5 +137,46 @@ export default function ProfilePage() {
       )}
       <Toast msg={toast} onDone={() => setToast(null)} />
     </>
+  );
+}
+
+// ---------- trainer application status / form ----------
+function TrainerApplicationBlock({ app, isMember, error, onSent }: {
+  app: TrainerApplication | null; isMember: boolean; error: string | null; onSent: (r: Result) => void;
+}) {
+  const { t, lang } = useT();
+  const [open, setOpen] = useState(false);
+  const formOpen = open || !!error;
+
+  // Approved but later demoted by an admin: nothing to offer here
+  if (app?.status === "Approved") {
+    if (isMember) return null;
+    return <div className="notice good" id="trainer-application"><b>{t("app_title")}:</b> {t("app_approved_body")} <Link href="/trainer">{t("trainer_home_link")}</Link></div>;
+  }
+
+  if (app?.status === "Pending") {
+    return (
+      <div className="notice app-block" id="trainer-application">
+        <div className="app-head"><b>{t("app_title")}</b><span className="pill st-pending">{t("app_status_Pending")}</span></div>
+        <p className="small">{t("app_pending_body", { date: fmtDateTime(app.created_at, lang) })}</p>
+        <p className="small muted">{app.specialization} · {t("f_experience")}: {app.experience_years} · {t("app_files")}: {app.certificates.length}</p>
+      </div>
+    );
+  }
+  if (!isMember) return null; // admins / trainers linked by hand
+
+  return (
+    <div className={`notice app-block ${app?.status === "Rejected" ? "bad" : ""}`} id="trainer-application">
+      {app?.status === "Rejected" && (
+        <>
+          <div className="app-head"><b>{t("app_title")}</b><span className="pill st-suspended">{t("app_status_Rejected")}</span></div>
+          <p className="small">{t("app_rejected_body")}{app.reject_reason ? ` ${t("app_reason", { reason: app.reject_reason })}` : ""}</p>
+        </>
+      )}
+      {error && <div className="notice bad small" role="alert">{t("app_failed_after_register", { error })}</div>}
+      {formOpen
+        ? <TrainerApplyForm onDone={(r) => { setOpen(false); onSent(r); }} />
+        : <button className="link" onClick={() => setOpen(true)}>{app?.status === "Rejected" ? t("app_reapply") : t("become_trainer")}</button>}
+    </div>
   );
 }

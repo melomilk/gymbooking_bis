@@ -63,6 +63,15 @@ implement every method below.
 |---|---|---|
 | `trainerRoster()` | `RosterRow[]` | Own sessions (from 12 h ago onward) with attendee names and statuses. |
 
+### Trainer sign-up
+| Method | Returns | Notes |
+|---|---|---|
+| `submitTrainerApplication(input, files)` | `Result` | Logged-in Member only. Uploads 1–5 certificates to Storage, then calls `submit_trainer_application`. Codes: `application_sent`, `application_exists`, `already_trainer`, `certificates_required`, `file_too_large`, `bad_file_type`, `upload_failed`, `invalid_email`. |
+| `myTrainerApplication()` | `TrainerApplication \| null` | Latest own application. |
+| `listTrainerApplications()` | `TrainerApplication[]` | Admin only; pending first. |
+| `certificateUrl(path)` | `string \| null` | Signed link valid for 5 minutes (owner or admin). |
+| `reviewTrainerApplication(id, approve, reason?)` | `Result` | Admin only. Codes: `application_approved`, `application_rejected`, `application_not_pending`, `application_not_found`, `already_trainer`. |
+
 ### Admin (FR-09)
 
 `entity` is one of `"branches" | "rooms" | "trainers" | "classes" | "class_sessions" | "members"`.

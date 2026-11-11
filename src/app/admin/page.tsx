@@ -5,20 +5,24 @@ import { useRequireRole, useT } from "@/components/Providers";
 import CrudSection, { type CrudConfig, type Form } from "@/components/CrudSection";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import { dayKey, fmtDate, fmtDayShort, fmtTime, toIso } from "@/lib/format";
+import Modal from "@/components/Modal";
+import type { TrainerApplication } from "@/lib/types";
 import type { AttendanceRow, BookingRow, Branch, ClassType, Entity, MemberRow, Reader, Result, Room, Row, SessionRow, Trainer } from "@/lib/types";
 import type { Key } from "@/lib/i18n";
 import { attendanceRate, fmtRate, LOW_ATTENDANCE } from "@/lib/stats";
 
-type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "checkin" | "report";
+type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "applications" | "checkin" | "report";
 const TABS: { id: Tab; label: Key }[] = [
   { id: "sessions", label: "tab_sessions" }, { id: "classes", label: "tab_classes" }, { id: "trainers", label: "tab_trainers" },
   { id: "branches", label: "tab_branches" }, { id: "rooms", label: "tab_rooms" }, { id: "members", label: "tab_members" },
+  { id: "applications", label: "tab_applications" },
   { id: "checkin", label: "tab_checkin" }, { id: "report", label: "tab_report" },
 ];
 
 type Data = {
   sessions: SessionRow[]; classes: ClassType[]; trainers: Trainer[]; branches: Branch[]; rooms: Room[];
   members: MemberRow[]; bookings: BookingRow[]; readers: Reader[]; report: AttendanceRow[];
+  applications: TrainerApplication[];
 };
 
 const addMinutes = (hhmm: string, mins: number) => {
@@ -40,12 +44,13 @@ export default function AdminPage() {
   const [toast, setToast] = useState<ToastMsg>(null);
 
   const load = useCallback(async () => {
-    const [sessions, classes, trainers, branches, rooms, members, bookings, readers, report] = await Promise.all([
+    const [sessions, classes, trainers, branches, rooms, members, bookings, readers, report, applications] = await Promise.all([
       api.listSessions({ includePast: true }), api.adminList("classes"), api.adminList("trainers"), api.adminList("branches"),
       api.adminList("rooms"), api.adminList("members"), api.allBookings(), api.listReaders(), api.attendanceReport(),
+      api.listTrainerApplications(),
     ]);
     setData({ sessions, classes: classes as ClassType[], trainers: trainers as Trainer[], branches: branches as Branch[],
-      rooms: rooms as Room[], members: members as MemberRow[], bookings, readers, report });
+      rooms: rooms as Room[], members: members as MemberRow[], bookings, readers, report, applications });
     setReaderId((cur) => cur || readers[0]?.reader_id || "");
   }, []);
 
@@ -223,17 +228,24 @@ export default function AdminPage() {
     sessions: sessionsCfg, classes: classesCfg, trainers: trainersCfg, branches: branchesCfg, rooms: roomsCfg, members: membersCfg,
   };
 
+  const pending = data.applications.filter((a) => a.status === "Pending").length;
+
   return (
     <>
       <h1>{t("admin_title")}</h1>
       <div className="tabs" role="tablist">
         {TABS.map((x) => (
-          <button key={x.id} role="tab" aria-selected={tab === x.id} className={tab === x.id ? "active" : ""} onClick={() => setTab(x.id)}>{t(x.label)}</button>
+          <button key={x.id} role="tab" aria-selected={tab === x.id} className={tab === x.id ? "active" : ""} onClick={() => setTab(x.id)}>
+            {t(x.label)}
+            {x.id === "applications" && pending > 0 && <span className="count">{pending}</span>}
+          </button>
         ))}
       </div>
 
       {tab === "report" ? (
         <AttendanceReport rows={data.report} />
+      ) : tab === "applications" ? (
+        <TrainerApplications rows={data.applications} onResult={onResult} />
       ) : tab !== "checkin" ? (
         <CrudSection key={tab} cfg={configs[tab]!} onResult={onResult} />
       ) : (
@@ -311,6 +323,82 @@ function AttendanceReport({ rows }: { rows: AttendanceRow[] }) {
           </tbody>
         </table>
       </div>
+    </>
+  );
+}
+
+// ---------- Trainer applications: check certificates, approve or reject ----------
+function TrainerApplications({ rows, onResult }: { rows: TrainerApplication[]; onResult: (r: Result) => void }) {
+  const { t, lang } = useT();
+  const [rejecting, setRejecting] = useState<TrainerApplication | null>(null);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState<number | null>(null);
+
+  async function decide(a: TrainerApplication, approve: boolean, why?: string) {
+    setBusy(a.application_id);
+    const r = await api.reviewTrainerApplication(a.application_id, approve, why);
+    setBusy(null);
+    setRejecting(null); setReason("");
+    onResult(r);
+  }
+
+  async function openFile(path: string) {
+    // open the tab first (popup blockers), then point it at the short-lived link
+    const w = window.open("", "_blank");
+    let url = await api.certificateUrl(path);
+    // demo mode keeps files as data: URLs, which browsers won't open directly
+    if (url?.startsWith("data:")) url = URL.createObjectURL(await (await fetch(url)).blob());
+    if (url && w) w.location.href = url;
+    else { w?.close(); onResult({ ok: false, code: "error", message: t("app_no_file") }); }
+  }
+
+  if (rows.length === 0) return <p className="muted">{t("app_empty")}</p>;
+  return (
+    <>
+      <p className="muted small">{t("approve_note")}</p>
+      <ul className="list">
+        {rows.map((a) => (
+          <li key={a.application_id} className="row-item col" data-application={a.application_id}>
+            <div className="app-head">
+              <b>{a.member_fullname}</b>
+              <span className={`pill ${a.status === "Pending" ? "st-pending" : a.status === "Approved" ? "st-active" : "st-suspended"}`}>
+                {t(`app_status_${a.status}`)}
+              </span>
+            </div>
+            <div className="small muted">
+              {a.phone_number} · {a.email} · {t("app_submitted")}: {fmtDayShort(a.created_at, lang)}, {fmtTime(a.created_at)}
+            </div>
+            <div className="small"><b>{t("f_specialization_short")}:</b> {a.specialization} · <b>{t("f_experience")}:</b> {a.experience_years}</div>
+            {a.bio && <div className="small bio">{a.bio}</div>}
+            <div className="small"><b>{t("app_files")}:</b>{" "}
+              {a.certificates.map((c, i) => (
+                <span key={c.path}>{i > 0 && ", "}
+                  <button className="link" onClick={() => openFile(c.path)}>{c.name}</button>
+                </span>
+              ))}
+            </div>
+            {a.status === "Rejected" && a.reject_reason && <div className="small muted">{t("app_reason", { reason: a.reject_reason })}</div>}
+            {a.status === "Pending" && (
+              <div className="right">
+                <button className="btn" disabled={busy === a.application_id} onClick={() => decide(a, true)}>{t("approve")}</button>
+                <button className="btn ghost" disabled={busy === a.application_id} onClick={() => setRejecting(a)}>{t("reject")}</button>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+
+      {rejecting && (
+        <Modal title={t("reject_title")} onClose={() => setRejecting(null)} actions={<>
+          <button className="btn ghost" onClick={() => setRejecting(null)}>{t("close")}</button>
+          <button className="btn danger" disabled={busy !== null} onClick={() => decide(rejecting, false, reason)}>{t("reject")}</button>
+        </>}>
+          <p><b>{rejecting.member_fullname}</b> · {rejecting.specialization}</p>
+          <label className="form">{t("reject_reason_label")}
+            <textarea rows={3} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
+          </label>
+        </Modal>
+      )}
     </>
   );
 }

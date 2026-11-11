@@ -80,6 +80,22 @@ export type Reader = { reader_id: string; branch_id: number; branch_name: string
 
 export type RegisterInput = { name: string; surname: string; phone: string; password: string; lang: Lang };
 
+// ---------- trainer sign-up ----------
+export type ApplicationStatus = "Pending" | "Approved" | "Rejected";
+/** A stored certificate: `path` inside the private bucket, `name` = original file name. */
+export type CertificateFile = { path: string; name: string };
+/** What a would-be trainer fills in on top of the normal registration. */
+export type TrainerApplicationInput = { email: string; specialization: string; experience_years: number; bio: string };
+/** One row of v_trainer_applications. */
+export type TrainerApplication = TrainerApplicationInput & {
+  application_id: number; member_id: number; member_fullname: string; phone_number: string;
+  certificates: CertificateFile[]; status: ApplicationStatus; reject_reason: string | null;
+  created_at: string; reviewed_at: string | null; trainer_id: number | null;
+};
+export const CERT_MAX_FILES = 5;
+export const CERT_MAX_BYTES = 5 * 1024 * 1024;
+export const CERT_TYPES = ["application/pdf", "image/jpeg", "image/png"];
+
 // Tables the admin panel can edit (FR-09)
 export type Entity = "branches" | "rooms" | "trainers" | "classes" | "class_sessions" | "members";
 export const ENTITY_ID: Record<Entity, string> = {
@@ -170,4 +186,25 @@ export interface Api {
   manualCheckIn(bookingId: number): Promise<Result>;
   /** Finished sessions with booked / attended / no-show counts, newest first (admin only). */
   attendanceReport(): Promise<AttendanceRow[]>;
+
+  // ---------- trainer sign-up ----------
+  /**
+   * Logged-in Member applies to become a Trainer: uploads the certificates, then saves
+   * the application. The role stays `Member` until an admin approves.
+   * Codes: `application_sent`, `application_exists`, `already_trainer`, `certificates_required`,
+   * `file_too_large`, `bad_file_type`, `upload_failed`, `invalid_email`, `required`, `invalid_value`.
+   */
+  submitTrainerApplication(i: TrainerApplicationInput, files: File[]): Promise<Result>;
+  /** The caller's latest application, or `null`. */
+  myTrainerApplication(): Promise<TrainerApplication | null>;
+  /** All applications, pending first (admin only). */
+  listTrainerApplications(): Promise<TrainerApplication[]>;
+  /** Short-lived link to open a certificate (owner or admin), or `null`. */
+  certificateUrl(path: string): Promise<string | null>;
+  /**
+   * Admin decision. Approve creates the trainer profile and makes the member a Trainer.
+   * Codes: `application_approved`, `application_rejected`, `application_not_pending`,
+   * `application_not_found`, `already_trainer`, `admin_only`.
+   */
+  reviewTrainerApplication(id: number, approve: boolean, reason?: string): Promise<Result>;
 }
