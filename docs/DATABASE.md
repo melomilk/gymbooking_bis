@@ -225,3 +225,15 @@ admin-only; approve inserts a `trainers` row and sets `members.role = 'Trainer'`
 
 Certificates live in the private Storage bucket `trainer-certificates` (5 MB, PDF/JPG/PNG) under
 `<auth uid>/…`. Policies: a user may upload only into their own folder; read access is the owner or an admin.
+
+
+## Sign-up rate limit (`migration_signup_rate_limit.sql`)
+
+- `signup_rate_limit` — one settings row: `enabled`, `max_per_minute` (default 150).
+- `signup_events` — one timestamp per created account (no personal data); rows older than 1 h are
+  deleted by the trigger.
+- `enforce_signup_rate_limit()` — `BEFORE INSERT` trigger on `auth.users`. Takes a transaction advisory
+  lock, counts events of the last 60 s and raises `signup_rate_limited` at the limit; otherwise logs an
+  event. A sign-up that fails later (e.g. duplicate phone) rolls its event back.
+- `signup_rate_status()` → `{"allowed": bool, "retry_after": seconds}`; callable by `anon`, used by the
+  app before creating an account. Both tables are closed to `anon` / `authenticated`.

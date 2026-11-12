@@ -39,18 +39,24 @@ export default function LoginPage() {
     const r = mode === "in"
       ? await api.login(f.phone, f.password)
       : await api.register({ name: f.name, surname: f.surname, phone: f.phone, password: f.password, lang });
-    if (!r.ok) { setBusy(false); return setError(tr(r)); }
+    if (!r.ok) {
+      setBusy(false);
+      return setError(r.code === "rate_limited" ? t("code_rate_limited", { s: r.retry_after ?? 60 }) : tr(r));
+    }
+    // after registration: phone confirmation step, then the usual page
+    const afterSignup = (path: string) => router.push(`/verify?next=${encodeURIComponent(path)}`);
 
     if (asTrainer) {
       // The account already exists here. If the application fails, the profile
       // page shows why and offers to send it again.
       const a = await sendApplication(trainer);
       await refresh();
-      router.push(a.ok ? "/profile" : `/profile?app_error=${encodeURIComponent(a.code)}`);
+      afterSignup(a.ok ? "/profile" : `/profile?app_error=${encodeURIComponent(a.code)}`);
       return;
     }
 
     const m = await refresh();
+    if (mode === "up") return afterSignup("/");
     // FR-04: logged in, then redirected to the main page (trainers to their classes)
     router.push(m?.role === "Trainer" ? "/trainer" : "/");
   }

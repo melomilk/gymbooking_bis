@@ -2,7 +2,7 @@ import type { Lang } from "./i18n";
 
 export type Role = "Member" | "Trainer" | "Admin";
 export type BookingStatus = "Confirmed" | "Cancelled" | "Attended" | "No-show";
-export type Result = { ok: boolean; code: string; message?: string };
+export type Result = { ok: boolean; code: string; message?: string; /** seconds, for `rate_limited` */ retry_after?: number };
 
 export type Branch = { branch_id: number; branch_name: string; address: string; phone_number: string };
 export type Room = { room_id: number; branch_id: number; room_name: string; max_capacity: number };
@@ -119,7 +119,7 @@ export interface Api {
   getMe(): Promise<Me | null>;
   /**
    * Validates input, creates the account and logs the member in.
-   * Codes: `invalid_name`, `invalid_phone`, `weak_password`, `phone_taken`, `saved`.
+   * Codes: `invalid_name`, `invalid_phone`, `weak_password`, `phone_taken`, `rate_limited` (+ `retry_after`), `saved`.
    */
   register(i: RegisterInput): Promise<Result>;
   /** Log in by phone (normalised to +7…) and password. Codes: `saved`, `bad_credentials`. */
