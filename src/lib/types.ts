@@ -1,6 +1,6 @@
 import type { Lang } from "./i18n";
 
-export type Role = "Member" | "Trainer" | "Admin";
+export type Role = "Member" | "Trainer" | "Receptionist" | "Admin";
 export type BookingStatus = "Confirmed" | "Cancelled" | "Attended" | "No-show";
 export type Result = { ok: boolean; code: string; message?: string; /** seconds, for `rate_limited` */ retry_after?: number };
 

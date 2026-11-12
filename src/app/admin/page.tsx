@@ -208,7 +208,7 @@ export default function AdminPage() {
     ],
     fields: [
       { key: "role", label: "role", type: "select", required: true,
-        options: (["Member", "Trainer", "Admin"] as const).map((x) => ({ value: x, label: t(`role_${x}`) })) },
+        options: (["Member", "Trainer", "Receptionist", "Admin"] as const).map((x) => ({ value: x, label: t(`role_${x}`) })) },
       { key: "trainer_id", label: "f_linked_trainer", type: "select",
         options: [{ value: "", label: t("none") }, ...opts(data.trainers, (x) => x.trainer_id, (x) => x.trainer_name)] },
       { key: "membership_status", label: "f_status", type: "select", required: true,

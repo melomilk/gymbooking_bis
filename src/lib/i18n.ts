@@ -15,6 +15,7 @@ const en = {
   nav_profile: "My Profile",
   nav_trainer: "My classes",
   nav_admin: "Admin panel",
+  nav_receptionist: "Reception",
   login: "Log in",
   logout: "Log out",
   search_placeholder: "Search trainers, branches, bookings",
@@ -95,6 +96,7 @@ const en = {
 
   // trainer
   trainer_title: "My classes",
+  receptionist_title: "Reception desk",
   attendees: "Attendees",
   no_attendees: "No bookings yet",
   not_linked: "Your account is not linked to a trainer profile.",
@@ -166,6 +168,7 @@ const en = {
   "bs_No-show": "No-show",
   "role_Member": "Member",
   "role_Trainer": "Trainer",
+  "role_Receptionist": "Receptionist",
   "role_Admin": "Admin",
 
   // result codes from the database / API
@@ -291,6 +294,7 @@ const ru: Record<Key, string> = {
   nav_profile: "Мой профиль",
   nav_trainer: "Мои занятия",
   nav_admin: "Панель администратора",
+  nav_receptionist: "Ресепшн",
   login: "Войти",
   logout: "Выйти",
   search_placeholder: "Поиск тренеров, филиалов, бронирований",
@@ -365,6 +369,7 @@ const ru: Record<Key, string> = {
   login_to_search_bookings: "Войдите, чтобы искать свои бронирования.",
 
   trainer_title: "Мои занятия",
+  receptionist_title: "Стойка ресепшена", 
   attendees: "Участники",
   no_attendees: "Пока нет записей",
   not_linked: "Ваш аккаунт не привязан к профилю тренера.",
@@ -434,6 +439,7 @@ const ru: Record<Key, string> = {
   "bs_No-show": "Не пришёл",
   "role_Member": "Клиент",
   "role_Trainer": "Тренер",
+  "role_Receptionist": "Ресепшн",
   "role_Admin": "Администратор",
 
   code_booked: "Запись подтверждена!",
@@ -556,6 +562,7 @@ const kk: Record<Key, string> = {
   nav_profile: "Менің профилім",
   nav_trainer: "Менің сабақтарым",
   nav_admin: "Әкімші панелі",
+  nav_receptionist: "Ресепшн",
   login: "Кіру",
   logout: "Шығу",
   search_placeholder: "Жаттықтырушы, филиал, брондау іздеу",
@@ -630,6 +637,7 @@ const kk: Record<Key, string> = {
   login_to_search_bookings: "Брондауларыңызды іздеу үшін жүйеге кіріңіз.",
 
   trainer_title: "Менің сабақтарым",
+  receptionist_title: "Ресепшн панелі",
   attendees: "Қатысушылар",
   no_attendees: "Әзірге жазылған адам жоқ",
   not_linked: "Тіркелгіңіз жаттықтырушы профиліне байланыстырылмаған.",
@@ -699,6 +707,7 @@ const kk: Record<Key, string> = {
   "bs_No-show": "Келмеді",
   "role_Member": "Клиент",
   "role_Trainer": "Жаттықтырушы",
+  "role_Receptionist": "Ресепшн",
   "role_Admin": "Әкімші",
 
   code_booked: "Жазылу расталды!",
