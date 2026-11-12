@@ -215,6 +215,20 @@ const en = {
   code_deleted: "Deleted.",
   code_error: "Something went wrong. Please try again.",
 
+  // sign-up limit and phone confirmation
+  verify_title: "Confirm your phone",
+  verify_sending: "Sending an SMS code to {phone}…",
+  verify_sent: "We sent a 6-digit code to {phone}.",
+  verify_code_label: "Code from the SMS",
+  verify_btn: "Confirm",
+  verify_checking: "Checking the code…",
+  verify_need_digits: "Enter all {n} digits of the code.",
+  verify_resend_in: "You can request a new code in {s} s",
+  verify_resend: "Send the code again",
+  verify_done: "Phone number confirmed",
+  verify_demo_hint: "Course project: no SMS is actually sent, any 6 digits will work.",
+  code_rate_limited: "Too many people are signing up right now. Please try again in {s} s.",
+
   // trainer sign-up
   account_type: "I am registering as",
   "acct_Member_desc": "Book classes and track your visits.",
@@ -468,6 +482,20 @@ const ru: Record<Key, string> = {
   code_deleted: "Удалено.",
   code_error: "Что-то пошло не так. Попробуйте ещё раз.",
 
+  // sign-up limit and phone confirmation
+  verify_title: "Подтверждение номера",
+  verify_sending: "Отправляем SMS-код на {phone}…",
+  verify_sent: "Мы отправили 6-значный код на {phone}.",
+  verify_code_label: "Код из SMS",
+  verify_btn: "Подтвердить",
+  verify_checking: "Проверяем код…",
+  verify_need_digits: "Введите все {n} цифр кода.",
+  verify_resend_in: "Новый код можно запросить через {s} с",
+  verify_resend: "Отправить код ещё раз",
+  verify_done: "Номер подтверждён",
+  verify_demo_hint: "Учебный проект: SMS на самом деле не отправляется, подойдут любые 6 цифр.",
+  code_rate_limited: "Сейчас слишком много регистраций. Попробуйте через {s} с.",
+
   // trainer sign-up
   account_type: "Я регистрируюсь как",
   "acct_Member_desc": "Записываться на занятия и следить за посещениями.",
@@ -718,6 +746,20 @@ const kk: Record<Key, string> = {
   code_updated: "Сақталды.",
   code_deleted: "Жойылды.",
   code_error: "Қате шықты. Қайталап көріңіз.",
+
+  // sign-up limit and phone confirmation
+  verify_title: "Нөмірді растау",
+  verify_sending: "{phone} нөміріне SMS-код жіберілуде…",
+  verify_sent: "{phone} нөміріне 6 таңбалы код жібердік.",
+  verify_code_label: "SMS-тағы код",
+  verify_btn: "Растау",
+  verify_checking: "Код тексерілуде…",
+  verify_need_digits: "Кодтың барлық {n} санын енгізіңіз.",
+  verify_resend_in: "Жаңа кодты {s} с кейін сұрауға болады",
+  verify_resend: "Кодты қайта жіберу",
+  verify_done: "Нөмір расталды",
+  verify_demo_hint: "Оқу жобасы: SMS шын мәнінде жіберілмейді, кез келген 6 сан жарайды.",
+  code_rate_limited: "Қазір тіркелушілер тым көп. {s} с кейін қайталап көріңіз.",
 
   // trainer sign-up
   account_type: "Тіркелу түрі",

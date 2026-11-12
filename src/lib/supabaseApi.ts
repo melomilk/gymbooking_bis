@@ -49,6 +49,14 @@ async function rpc(fn: string, args: Record<string, unknown>): Promise<Result> {
 
 const now = () => new Date().toISOString();
 
+/** Per-minute sign-up limit (migration_signup_rate_limit.sql). Without the migration: never limited. */
+async function signupRateLimited(): Promise<Result | null> {
+  const { data, error } = await sb().rpc("signup_rate_status");
+  const st = data as { allowed?: boolean; retry_after?: number } | null;
+  if (error || !st || st.allowed !== false) return null;
+  return { ok: false, code: "rate_limited", retry_after: st.retry_after ?? 60 };
+}
+
 export const supabaseApi: Api = {
   mode: "supabase",
 
@@ -64,6 +72,9 @@ export const supabaseApi: Api = {
     if (!validName(name) || !validName(surname)) return { ok: false, code: "invalid_name" };
     if (!p) return { ok: false, code: "invalid_phone" };
     if (password.length < MIN_PASSWORD) return { ok: false, code: "weak_password" };
+
+    const limited = await signupRateLimited();
+    if (limited) return limited;
 
     // Preferred path: server route creates a confirmed user with the service key.
     const res = await fetch("/api/register", {
@@ -83,6 +94,8 @@ export const supabaseApi: Api = {
         options: { data: { member_name: name.trim(), member_surname: surname.trim(), phone_number: p, preferred_language: lang } },
       });
       if (error) {
+        const late = await signupRateLimited(); // the database trigger refused the user
+        if (late) return late;
         const msg = error.message.toLowerCase();
         if (msg.includes("already") || error.code === "user_already_exists") return { ok: false, code: "phone_taken" };
         if (msg.includes("password")) return { ok: false, code: "weak_password" };

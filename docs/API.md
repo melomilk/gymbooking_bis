@@ -117,6 +117,7 @@ service-role key stays secret.
 | `{ "ok": true, "code": "created" }` | Account created. The client then logs in. |
 | `{ "ok": false, "code": "invalid_name" \| "invalid_phone" \| "weak_password" }` | Validation failed. |
 | `{ "ok": false, "code": "phone_taken" }` | Phone already registered. |
+| `{ "ok": false, "code": "rate_limited", "retry_after": 42 }` | Per-minute sign-up limit reached (`signup_rate_status()` / trigger). Try again after `retry_after` seconds. |
 | `{ "ok": false, "code": "error", "fallback": true }` | Service-role key not configured. The client falls back to normal `signUp`. |
 | `{ "ok": false, "code": "error", "message": "…" }` | Other Supabase error. |
 

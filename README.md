@@ -143,6 +143,7 @@ supabase/
   schema.sql              Tables, constraints, views, functions, security rules
   seed.sql                Sample branches, rooms, trainers, classes and 7 days of sessions
   migration_trainer_signup.sql  Trainer applications, certificate storage, approve / reject
+  migration_signup_rate_limit.sql  Limit on new accounts per minute (default 150)
 ```
 
 ---
@@ -163,7 +164,7 @@ Without environment variables, the app runs in **demo mode**: data is kept in th
 ### Connecting Supabase
 
 1. Create a Supabase project. In the **SQL Editor**, run `supabase/schema.sql`, then `supabase/seed.sql`,
-   then `supabase/migration_trainer_signup.sql`.
+   then `supabase/migration_trainer_signup.sql` and `supabase/migration_signup_rate_limit.sql`.
 2. Create `.env.local` (see `.env.example`):
 
    ```
@@ -191,6 +192,16 @@ specialization, years of experience, an optional bio and 1–5 certificates (PDF
   **Trainer**; after a rejection the person can apply again from the profile.
 - A user can never make themselves a Trainer: the role only changes inside the admin-only
   `review_trainer_application` function.
+
+### Sign-up limit and phone confirmation
+
+- **Limit:** at most 150 new accounts per rolling minute for the whole site. Above that the form shows
+  "try again in N s". Enforced by a trigger on `auth.users`, so it can't be bypassed by calling Supabase
+  directly. Change it in the SQL Editor: `update public.signup_rate_limit set max_per_minute = 300;`
+  (`enabled = false` turns it off). Without the migration, registration works as before, unlimited.
+- **Phone confirmation (imitation):** after registering, `/verify` "sends" an SMS (a few seconds),
+  accepts any 6 digits and continues to the usual page. No SMS is sent and nothing is stored;
+  a real version would need an SMS provider (e.g. Supabase phone auth).
 
 ### Deploying
 
