@@ -31,6 +31,7 @@ const DEMO_FILE_LIMIT = 700 * 1024;
 export const DEMO_ACCOUNTS = [
   { role: "Admin", phone: "+7 700 000 0001", password: "admin123" },
   { role: "Trainer", phone: "+7 700 000 0002", password: "trainer123" },
+  { role: "Receptionist", phone: "+7 700 000 0003", password: "reception123" },
 ] as const;
 
 // ---------- helpers ----------
@@ -99,6 +100,7 @@ async function seed(): Promise<Store> {
   const accounts: [string, string, string, string, MemberRow["role"], number | null][] = [
     ["Dana", "Admin", "+77000000001", "admin123", "Admin", null],
     ["Aigerim", "Sadykova", "+77000000002", "trainer123", "Trainer", 1],
+    ["Madina", "Orazova", "+77000000003", "reception123", "Receptionist", null],
   ];
   for (const [n, s, p, pw, role, tid] of accounts) {
     const h = await hashPassword(pw);
@@ -146,6 +148,8 @@ function save(s: Store) {
 // ---------- "views" ----------
 const me = (st: Store) => st.members.find((m) => m.member_id === st.current) ?? null;
 const isAdmin = (st: Store) => me(st)?.role === "Admin";
+/** Admin or Receptionist: the front-desk functions (all bookings, readers, check-in). */
+const isStaff = (st: Store) => me(st)?.role === "Admin" || me(st)?.role === "Receptionist";
 const taken = (st: Store, sessionId: number) =>
   st.bookings.filter((b) => b.session_id === sessionId && b.booking_status !== "Cancelled").length;
 
@@ -176,7 +180,7 @@ function vBooking(st: Store, b: DBooking): BookingRow {
 function visibleBookings(st: Store): BookingRow[] {
   const m = me(st);
   if (!m) return [];
-  return st.bookings.filter((b) => m.role === "Admin" || b.member_id === m.member_id).map((b) => vBooking(st, b));
+  return st.bookings.filter((b) => m.role === "Admin" || m.role === "Receptionist" || b.member_id === m.member_id).map((b) => vBooking(st, b));
 }
 
 const includes = (hay: string, q: string) => hay.toLocaleLowerCase().includes(q.toLocaleLowerCase());
@@ -222,7 +226,7 @@ function validate(st: Store, entity: Entity, row: Row, id: number | null): strin
       if (!target) return "forbidden";
       const role = str(row.role ?? target.role);
       const tid = row.trainer_id === undefined ? target.trainer_id : row.trainer_id === null || row.trainer_id === "" ? null : num(row.trainer_id);
-      if (!["Member", "Trainer", "Admin"].includes(role)) return "invalid_value";
+      if (!["Member", "Trainer", "Receptionist", "Admin"].includes(role)) return "invalid_value";
       if (role === "Trainer" && tid === null) return "trainer_needs_link";
       if (tid !== null && st.members.some((m) => m.member_id !== id && m.trainer_id === tid)) return "duplicate";
       if (target.member_id === st.current && target.role === "Admin" && role !== "Admin") return "cannot_demote_self";
@@ -462,7 +466,7 @@ export const demoApi: Api = {
 
   async allBookings() {
     const st = await load();
-    if (!isAdmin(st)) return [];
+    if (!isStaff(st)) return [];
     const cutoff = Date.now() - 12 * 3600_000;
     return visibleBookings(st)
       .filter((b) => b.booking_status !== "Cancelled" && new Date(b.end_time).getTime() > cutoff)
@@ -471,13 +475,13 @@ export const demoApi: Api = {
 
   async listReaders() {
     const st = await load();
-    if (!isAdmin(st)) return [];
+    if (!isStaff(st)) return [];
     return st.readers.map<Reader>((r) => ({ ...r, branch_name: st.branches.find((b) => b.branch_id === r.branch_id)?.branch_name ?? "" }));
   },
 
   async checkIn(bookingId, readerId) {
     const st = await load();
-    if (!isAdmin(st)) return no("admin_only");
+    if (!isStaff(st)) return no("admin_only");
     const b = st.bookings.find((x) => x.booking_id === bookingId);
     if (!b) return no("booking_not_found");
     if (b.booking_status === "Attended") return no("already_checked_in");
@@ -495,7 +499,7 @@ export const demoApi: Api = {
 
   async manualCheckIn(bookingId) {
     const st = await load();
-    if (!isAdmin(st)) return no("admin_only");
+    if (!isStaff(st)) return no("admin_only");
     const b = st.bookings.find((x) => x.booking_id === bookingId);
     if (!b) return no("booking_not_found");
     if (b.booking_status === "Attended") return no("already_checked_in");

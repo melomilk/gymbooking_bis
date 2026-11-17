@@ -56,8 +56,8 @@ create table public.members (
                      check (membership_status in ('Active', 'Suspended')),
   membership_expiry  date not null,
   phone_number       varchar(20) not null unique,             -- FR-04: login is by phone
-  role               varchar(10) not null default 'Member'
-                     check (role in ('Member', 'Trainer', 'Admin')),   -- FR-10
+  role               varchar(20) not null default 'Member'
+                     check (role in ('Member', 'Trainer', 'Receptionist', 'Admin')),   -- FR-10
   trainer_id         bigint unique references public.trainers(trainer_id),
   preferred_language varchar(2) not null default 'en'
                      check (preferred_language in ('kk', 'en', 'ru')), -- FR-07
@@ -149,6 +149,12 @@ language sql stable security definer set search_path = public as $$
   select public.my_role() = 'Admin'
 $$;
 
+-- Front desk: admins and receptionists (all bookings, readers, check-in).
+create function public.is_staff() returns boolean
+language sql stable security definer set search_path = public as $$
+  select public.my_role() in ('Admin', 'Receptionist')
+$$;
+
 -- ---------------------------------------------------------------------
 -- ROW LEVEL SECURITY
 -- Members/visitors: read the schedule through views, write only through
@@ -210,8 +216,8 @@ select m.member_id, m.member_name, m.member_surname, m.membership_status,
 from public.members m
 where m.auth_user_id = auth.uid();
 
--- Bookings with session details. Members see their own rows, admins see all
--- rows (FR-08), everyone else sees nothing.
+-- Bookings with session details. Members see their own rows, admins and
+-- receptionists see all rows (FR-08), everyone else sees nothing.
 create view public.v_bookings as
 select b.booking_id, b.member_id, b.session_id, b.booking_status, b.booking_time,
        b.cancelled_at, b.fee_forfeited,
@@ -225,7 +231,7 @@ join public.classes  c  on c.class_id   = s.class_id
 join public.trainers t  on t.trainer_id = s.trainer_id
 join public.branches br on br.branch_id = s.branch_id
 join public.rooms    r  on r.room_id    = s.room_id
-where m.auth_user_id = auth.uid() or public.is_admin();
+where m.auth_user_id = auth.uid() or public.is_staff();
 
 -- Trainer roster: a trainer sees only attendee NAMES for their own classes.
 create view public.v_trainer_roster as
@@ -260,7 +266,7 @@ create view public.v_readers as
 select r.reader_id, r.branch_id, br.branch_name, r.check_in_method, r.location_note
 from public.readers r
 join public.branches br on br.branch_id = r.branch_id
-where public.is_admin();
+where public.is_staff();
 
 -- ---------------------------------------------------------------------
 -- BUSINESS LOGIC (each function = one transaction)
@@ -375,8 +381,8 @@ declare
   v_branch bigint;
   v_reader public.readers%rowtype;
 begin
-  if not public.is_admin() then
-    return public.result(false, 'admin_only', 'Only admins can record check-ins.');
+  if not public.is_staff() then
+    return public.result(false, 'admin_only', 'Only admins and receptionists can record check-ins.');
   end if;
   select * into v_b from public.bookings where booking_id = p_booking_id for update;
   if not found then
@@ -420,7 +426,7 @@ begin
   return v_count;
 end $$;
 
--- MANUAL CHECK-IN (Plan B when the NFC reader fails). Admin only; the class
+-- MANUAL CHECK-IN (Plan B when the NFC reader fails). Admin/receptionist only; the class
 -- must have started. Works for 'Confirmed' and for 'No-show' (the member did
 -- come, the reader just didn't record it), so the forfeited fee is returned.
 create function public.manual_check_in(p_booking_id bigint) returns jsonb
@@ -429,8 +435,8 @@ declare
   v_b     public.bookings%rowtype;
   v_start timestamptz;
 begin
-  if not public.is_admin() then
-    return public.result(false, 'admin_only', 'Only admins can record check-ins.');
+  if not public.is_staff() then
+    return public.result(false, 'admin_only', 'Only admins and receptionists can record check-ins.');
   end if;
   select * into v_b from public.bookings where booking_id = p_booking_id for update;
   if not found then

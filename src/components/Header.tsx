@@ -26,6 +26,7 @@ export default function Header() {
           {link("/", t("nav_classes"))}
           {me && link("/profile", t("nav_profile"))}
           {me?.role === "Trainer" && link("/trainer", t("nav_trainer"))}
+          {me?.role === "Receptionist" && link("/receptionist", t("nav_receptionist"))}
           {me?.role === "Admin" && link("/admin", t("nav_admin"))}
         </nav>
         <form className="searchbar" role="search" onSubmit={(e) => { e.preventDefault(); router.push(`/search?q=${encodeURIComponent(q.trim())}`); }}>

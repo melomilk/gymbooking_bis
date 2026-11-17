@@ -144,6 +144,7 @@ supabase/
   seed.sql                Sample branches, rooms, trainers, classes and 7 days of sessions
   migration_trainer_signup.sql  Trainer applications, certificate storage, approve / reject
   migration_signup_rate_limit.sql  Limit on new accounts per minute (default 150)
+  migration_receptionist.sql  Receptionist role for a database made from an older schema.sql
 ```
 
 ---
