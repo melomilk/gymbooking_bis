@@ -147,6 +147,7 @@ supabase/
   migration_receptionist.sql  Receptionist role for a database made from an older schema.sql
   migration_booking_rules.sql  Staff can't book, no overlapping bookings, check-in opens 30 min before start
   migration_session_cancel.sql  Admin can cancel a class; a booked class can't be moved to another time or room
+  migration_excuse_no_show.sql  Excuse a no-show for a valid reason (PDF medical note for illness), fee returned
 ```
 
 ---
@@ -167,7 +168,8 @@ Without environment variables, the app runs in **demo mode**: data is kept in th
 ### Connecting Supabase
 
 1. Create a Supabase project. In the **SQL Editor**, run `supabase/schema.sql`, then `supabase/seed.sql`,
-   then `supabase/migration_trainer_signup.sql` and `supabase/migration_signup_rate_limit.sql`.
+   then `supabase/migration_trainer_signup.sql`, `supabase/migration_signup_rate_limit.sql`
+   and `supabase/migration_excuse_no_show.sql`.
 2. Create `.env.local` (see `.env.example`):
 
    ```

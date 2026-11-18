@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { demoApi as api } from "../../src/lib/demoApi";
 import { H, DAY, ADMIN, TRAINER, loginAdmin, registerMember, firstSession, adminCreateSession } from "./helpers";
 
@@ -346,5 +346,57 @@ describe("Forgotten password (manual test table, case 12)", () => {
     expect(await api.requestPasswordReset(ADMIN.phone)).toMatchObject({ ok: false, code: "reset_staff" });
     expect(await api.requestPasswordReset("+77000000003")).toMatchObject({ ok: false, code: "reset_staff" }); // receptionist
     expect(await api.requestPasswordReset("123")).toMatchObject({ ok: false, code: "invalid_phone" });
+  });
+});
+
+describe("Excused no-show (valid reason)", () => {
+  afterEach(() => vi.useRealTimers());
+  const pdf = () => new File(["%PDF-1.4 test"], "note.pdf", { type: "application/pdf" });
+
+  /** A member books a class, then the clock moves past its end -> the booking is a No-show. */
+  async function makeNoShow() {
+    const s = await adminCreateSession(2 * H);
+    const m = await registerMember();
+    await api.book(s.session_id);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 4 * H);
+    const b = (await api.myBookings(m.member_id))[0];
+    expect(b).toMatchObject({ booking_status: "No-show", fee_forfeited: true });
+    await api.logout();
+    return { b, m };
+  }
+
+  it("TC-31 illness with a PDF: booking becomes Cancelled, fee returned, reason and file saved", async () => {
+    const { b } = await makeNoShow();
+    await loginAdmin();
+    expect((await api.noShowBookings()).map((x) => x.booking_id)).toContain(b.booking_id);
+    expect(await api.excuseNoShow(b.booking_id, { reason: "Illness", note: "flu", file: pdf() }))
+      .toMatchObject({ ok: true, code: "excused" });
+    const after = (await api.noShowBookings()).find((x) => x.booking_id === b.booking_id)!;
+    expect(after).toMatchObject({ booking_status: "Cancelled", fee_forfeited: false, excuse_reason: "Illness", excuse_note: "flu" });
+    expect(await api.excuseDocumentUrl(after.excuse_document!)).toMatch(/^data:application\/pdf;base64,/);
+    // the miss no longer counts in the attendance report
+    const row = (await api.attendanceReport()).find((r) => r.session_id === b.session_id)!;
+    expect(row).toMatchObject({ booked: 0, no_show: 0 });
+    // excusing twice is refused
+    expect(await api.excuseNoShow(b.booking_id, { reason: "Work", note: "", file: null }))
+      .toMatchObject({ ok: false, code: "not_no_show" });
+  });
+
+  it("TC-32 rules: illness needs a PDF, Other needs a comment, only admins, only no-shows", async () => {
+    const { b } = await makeNoShow();
+    // a member can't excuse their own miss
+    await api.login("+77011112233", "secret123");
+    expect(await api.excuseNoShow(b.booking_id, { reason: "Work", note: "", file: null })).toMatchObject({ ok: false, code: "admin_only" });
+    await api.logout();
+    await loginAdmin();
+    expect(await api.excuseNoShow(b.booking_id, { reason: "Illness", note: "", file: null })).toMatchObject({ code: "document_required" });
+    const png = new File(["x"], "a.png", { type: "image/png" });
+    expect(await api.excuseNoShow(b.booking_id, { reason: "Illness", note: "", file: png })).toMatchObject({ code: "pdf_only" });
+    expect(await api.excuseNoShow(b.booking_id, { reason: "Other", note: "  ", file: null })).toMatchObject({ code: "note_required" });
+    expect(await api.excuseNoShow(b.booking_id, { reason: "Family", note: "", file: null })).toMatchObject({ ok: true });
+    // a booking that is not a no-show can't be excused
+    const upcoming = (await api.allBookings()).find((x) => x.booking_status === "Confirmed");
+    if (upcoming) expect(await api.excuseNoShow(upcoming.booking_id, { reason: "Work", note: "", file: null })).toMatchObject({ code: "not_no_show" });
   });
 });

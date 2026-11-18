@@ -94,7 +94,11 @@ Index: `start_time`.
 | `booking_status` | varchar(10) | `Confirmed` / `Cancelled` / `Attended` / `No-show` |
 | `booking_time` | timestamptz | default `now()` |
 | `cancelled_at` | timestamptz | set on cancel |
-| `fee_forfeited` | boolean | `true` after a late cancellation (FR-06) |
+| `fee_forfeited` | boolean | `true` after a late cancellation (FR-06) or a no-show; `false` again when a no-show is excused |
+| `excuse_reason` | varchar(10) | `Illness` / `Family` / `Work` / `Other`; set when an admin excused a no-show (migration_excuse_no_show.sql) |
+| `excuse_note` | varchar(500) | admin's comment; required for `Other` |
+| `excuse_document` | text | path of the PDF medical note in the private `excuse-documents` bucket; required for `Illness` |
+| `excused_at` | timestamptz | when the no-show was excused |
 
 `UNIQUE (member_id, session_id)` – FR-02. Re-booking after a cancellation
 re-uses the same row. Index: `session_id`.

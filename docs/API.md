@@ -207,3 +207,21 @@ and `fee_forfeited = true` (the member neither came nor cancelled).
   `Attended` and returns the forfeited fee. Codes: `checked_in_manual`,
   `already_checked_in`, `not_checkinable`, `class_not_started`, `booking_not_found`, `admin_only`.
 - My Profile shows the member's own progress: classes attended, missed and the rate.
+
+## Excused no-show (valid reason)
+
+Needs `supabase/migration_excuse_no_show.sql`. For a member who did **not** come but had
+a valid reason. `manualCheckIn` must not be used for this: it would record a visit that
+never happened and the attendance report would be wrong.
+
+- `noShowBookings()`: `No-show` and already excused bookings of the last 30 days (admin
+  panel → **No-shows** tab).
+- `excuseNoShow(bookingId, { reason, note, file })`: reason is `Illness`, `Family`, `Work`
+  or `Other`. `Illness` requires a PDF medical note (≤ 5 MB), `Other` requires a comment.
+  The PDF is uploaded to the private bucket `excuse-documents/<booking_id>/…`, then
+  `excuse_no_show()` (admin only, only for `No-show`) sets `Cancelled`,
+  `fee_forfeited = false` and saves the reason, comment and file path. Cancelled
+  bookings are not counted in the report or in My Progress, so the miss disappears.
+  Codes: `excused`, `not_no_show`, `invalid_reason`, `note_required`,
+  `document_required`, `pdf_only`, `file_too_large`, `upload_failed`, `booking_not_found`, `admin_only`.
+- `excuseDocumentUrl(path)`: 5-minute signed link to the PDF (admin or the booking's member).

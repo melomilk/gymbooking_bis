@@ -1,9 +1,10 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import type { Api, AttendanceRow, BookingRow, CertificateFile, Entity, ResetRequest, Result, Row, SessionRow, TrainerApplication } from "./types";
-import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID } from "./types";
-import { checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
+import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES } from "./types";
+import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
 
 const CERT_BUCKET = "trainer-certificates";
+const EXCUSE_BUCKET = "excuse-documents";
 
 let client: SupabaseClient | null = null;
 function sb(): SupabaseClient {
@@ -237,6 +238,37 @@ export const supabaseApi: Api = {
     const { data } = await sb().from("v_attendance_report").select("*")
       .lt("end_time", now()).order("start_time", { ascending: false }).limit(100);
     return (data ?? []) as AttendanceRow[];
+  },
+
+  // ---------- excused no-show (migration_excuse_no_show.sql) ----------
+  async noShowBookings() {
+    await markNoShows();
+    const { data } = await sb().from("v_bookings").select("*")
+      .or("booking_status.eq.No-show,excuse_reason.not.is.null")
+      .gt("start_time", new Date(Date.now() - 30 * 86400_000).toISOString())
+      .order("start_time", { ascending: false }).limit(200);
+    return (data ?? []) as BookingRow[];
+  },
+
+  async excuseNoShow(bookingId, i) {
+    const err = checkExcuse(i, { maxBytes: EXCUSE_DOC_MAX_BYTES, types: EXCUSE_DOC_TYPES });
+    if (err) return { ok: false, code: err };
+    let path: string | null = null;
+    if (i.file) {
+      // folder = booking id (the function checks it)
+      path = `${bookingId}/${Date.now()}-${crypto.randomUUID()}.pdf`;
+      const { error } = await sb().storage.from(EXCUSE_BUCKET).upload(path, i.file, { contentType: "application/pdf", upsert: false });
+      if (error) return { ok: false, code: "upload_failed", message: error.message };
+    }
+    const r = await rpc("excuse_no_show", { p_booking_id: bookingId, p_reason: i.reason, p_note: i.note, p_document: path });
+    // refused (e.g. not a no-show any more): don't leave an orphan file behind
+    if (!r.ok && path) await sb().storage.from(EXCUSE_BUCKET).remove([path]);
+    return r;
+  },
+
+  async excuseDocumentUrl(path) {
+    const { data } = await sb().storage.from(EXCUSE_BUCKET).createSignedUrl(path, 300);
+    return data?.signedUrl ?? null;
   },
 
   // ---------- trainer sign-up ----------

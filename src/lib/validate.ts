@@ -48,3 +48,18 @@ export function checkTrainerApplication(
   if (files.some((f) => f.size > limits.maxBytes)) return "file_too_large";
   return null;
 }
+
+/** Excused no-show (same rules as excuse_no_show() in migration_excuse_no_show.sql). Returns an error code or null. */
+export function checkExcuse(
+  i: { reason: string; note: string; file: { size: number; type: string } | null },
+  limits: { maxBytes: number; types: string[] },
+): string | null {
+  if (!["Illness", "Family", "Work", "Other"].includes(i.reason)) return "invalid_reason";
+  if (i.reason === "Other" && !i.note.trim()) return "note_required";
+  if (i.reason === "Illness" && !i.file) return "document_required";
+  if (i.file) {
+    if (!limits.types.includes(i.file.type)) return "pdf_only";
+    if (i.file.size > limits.maxBytes) return "file_too_large";
+  }
+  return null;
+}

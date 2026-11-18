@@ -4,8 +4,8 @@
 import type {
   Api, AttendanceRow, CertificateFile, TrainerApplication, Branch, BookingRow, ClassType, Entity, Me, MemberRow, Reader, Result, Room, RosterRow, Row, SessionRow, Trainer,
 } from "./types";
-import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID } from "./types";
-import { checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
+import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES } from "./types";
+import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
 import { CHECKIN_OPENS_MS, FREE_CANCEL_MS } from "./format";
 
 const KEY = "gym-demo-v2";
@@ -13,7 +13,8 @@ const TZ_OFFSET_H = 5; // Asia/Almaty
 
 type DMember = MemberRow & { pw_salt: string; pw_hash: string };
 type DSession = { session_id: number; class_id: number; trainer_id: number; branch_id: number; room_id: number; start_time: string; end_time: string; capacity: number; cancelled_at?: string | null };
-type DBooking = { booking_id: number; member_id: number; session_id: number; booking_status: BookingRow["booking_status"]; booking_time: string; cancelled_at: string | null; fee_forfeited: boolean };
+type DBooking = { booking_id: number; member_id: number; session_id: number; booking_status: BookingRow["booking_status"]; booking_time: string; cancelled_at: string | null; fee_forfeited: boolean;
+  excuse_reason?: BookingRow["excuse_reason"]; excuse_note?: string | null; excuse_document?: string | null; excused_at?: string | null };
 type DReader = { reader_id: string; branch_id: number; check_in_method: string };
 type Store = {
   branches: Branch[]; rooms: Room[]; trainers: Trainer[]; classes: ClassType[];
@@ -22,7 +23,7 @@ type Store = {
   current: number | null; seq: Record<string, number>;
   // trainer sign-up (optional: stores saved before this feature don't have them)
   applications?: DApplication[];
-  /** certificate path -> data URL (small files only; localStorage is ~5 MB) */
+  /** certificate / excuse note path -> data URL (small files only; localStorage is ~5 MB) */
   files?: Record<string, string>;
 };
 type DApplication = Omit<TrainerApplication, "member_fullname" | "phone_number">;
@@ -177,6 +178,8 @@ function vBooking(st: Store, b: DBooking): BookingRow {
     member_fullname: `${m.member_name} ${m.member_surname}`, class_name: s.class_name, trainer_id: s.trainer_id,
     trainer_name: s.trainer_name, branch_id: s.branch_id, branch_name: s.branch_name, room_name: s.room_name,
     start_time: s.start_time, end_time: s.end_time, session_cancelled_at: s.cancelled_at ?? null,
+    excuse_reason: b.excuse_reason ?? null, excuse_note: b.excuse_note ?? null,
+    excuse_document: b.excuse_document ?? null, excused_at: b.excused_at ?? null,
   };
 }
 
@@ -268,6 +271,14 @@ function tableOf(st: Store, entity: Entity): Row[] {
 function vApplication(st: Store, a: DApplication): TrainerApplication {
   const m = st.members.find((x) => x.member_id === a.member_id)!;
   return { ...a, member_fullname: `${m.member_name} ${m.member_surname}`, phone_number: m.phone_number };
+}
+
+/** File -> data URL without FileReader (also works in Node tests). */
+async function fileToDataUrl(f: File) {
+  const bytes = new Uint8Array(await f.arrayBuffer());
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return `data:${f.type};base64,${btoa(bin)}`;
 }
 
 const readAsDataUrl = (f: File) => new Promise<string>((res, rej) => {
@@ -606,6 +617,48 @@ export const demoApi: Api = {
         };
       });
   },
+  // ---------- excused no-show (same rules as migration_excuse_no_show.sql) ----------
+  async noShowBookings() {
+    const st = await load();
+    if (!isAdmin(st)) return [];
+    const cutoff = Date.now() - 30 * 86400_000;
+    return visibleBookings(st)
+      .filter((b) => (b.booking_status === "No-show" || b.excuse_reason) && new Date(b.start_time).getTime() > cutoff)
+      .sort((a, b) => b.start_time.localeCompare(a.start_time));
+  },
+
+  async excuseNoShow(bookingId, i) {
+    const err = checkExcuse(i, { maxBytes: EXCUSE_DOC_MAX_BYTES, types: EXCUSE_DOC_TYPES });
+    if (err) return no(err);
+    const st = await load();
+    if (!isAdmin(st)) return no("admin_only");
+    const b = st.bookings.find((x) => x.booking_id === bookingId);
+    if (!b) return no("booking_not_found");
+    if (b.booking_status !== "No-show") return no("not_no_show");
+    let path: string | null = null;
+    if (i.file) {
+      path = `${bookingId}/${Date.now()}.pdf`;
+      st.files ??= {};
+      // big files are only listed by name in demo mode, so the browser storage doesn't overflow
+      if (i.file.size <= DEMO_FILE_LIMIT) st.files[path] = await fileToDataUrl(i.file);
+    }
+    const note = i.note.trim().slice(0, 500) || null;
+    Object.assign(b, {
+      booking_status: "Cancelled", fee_forfeited: false, cancelled_at: nowIso(),
+      excuse_reason: i.reason, excuse_note: note, excuse_document: path, excused_at: nowIso(),
+    });
+    save(st);
+    return ok("excused");
+  },
+
+  async excuseDocumentUrl(path) {
+    const st = await load();
+    const m = me(st);
+    const b = st.bookings.find((x) => x.excuse_document === path);
+    if (!m || !b || (m.role !== "Admin" && b.member_id !== m.member_id)) return null;
+    return st.files?.[path] ?? null;
+  },
+
   // ---------- trainer sign-up (same rules as migration_trainer_signup.sql) ----------
   async submitTrainerApplication(input, files) {
     const err = checkTrainerApplication(input, files, { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES });

@@ -91,6 +91,7 @@ export default function ProfilePage() {
             {b.booking_status === "Cancelled" && b.session_cancelled_at ? t("cancelled_by_gym") : t(`bs_${b.booking_status}`)}
             {b.fee_forfeited ? ` · ${t("fee_forfeited")}` : ""}
           </span>
+          {b.excuse_reason && <span className="small muted">{t("excused_label", { reason: t(`er_${b.excuse_reason}`) })}</span>}
           {canCancel && <button className="btn ghost" onClick={() => cancel(b)}>{t("cancel_booking")}</button>}
         </div>
       </li>

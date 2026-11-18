@@ -71,7 +71,21 @@ export type BookingRow = {
   end_time: string;
   /** set when the gym cancelled the whole class */
   session_cancelled_at?: string | null;
+  /** Set when an admin excused a no-show (the booking is then `Cancelled`). */
+  excuse_reason?: ExcuseReason | null;
+  excuse_note?: string | null;
+  /** Path of the PDF note in the private `excuse-documents` bucket. */
+  excuse_document?: string | null;
+  excused_at?: string | null;
 };
+
+// ---------- excused no-show ----------
+export type ExcuseReason = "Illness" | "Family" | "Work" | "Other";
+export const EXCUSE_REASONS: ExcuseReason[] = ["Illness", "Family", "Work", "Other"];
+/** Illness needs a PDF medical note; Other needs a written note. */
+export const EXCUSE_DOC_MAX_BYTES = 5 * 1024 * 1024;
+export const EXCUSE_DOC_TYPES = ["application/pdf"];
+export type ExcuseInput = { reason: ExcuseReason; note: string; file: File | null };
 
 export type RosterRow = {
   session_id: number; class_name: string; branch_name: string; room_name: string;
@@ -208,6 +222,18 @@ export interface Api {
   manualCheckIn(bookingId: number): Promise<Result>;
   /** Finished sessions with booked / attended / no-show counts, newest first (admin only). */
   attendanceReport(): Promise<AttendanceRow[]>;
+  /** No-shows and excused bookings of the last 30 days, newest first (admin only). */
+  noShowBookings(): Promise<BookingRow[]>;
+  /**
+   * The member missed the class for a valid reason. Uploads the PDF note (if any), then the
+   * booking becomes `Cancelled` with the reason saved, and the forfeited fee is returned.
+   * `Illness` requires a PDF, `Other` requires a note. Not the same as `manualCheckIn`:
+   * the member did NOT come. Codes: `excused`, `not_no_show`, `invalid_reason`, `note_required`,
+   * `document_required`, `pdf_only`, `file_too_large`, `upload_failed`, `booking_not_found`, `admin_only`.
+   */
+  excuseNoShow(bookingId: number, i: ExcuseInput): Promise<Result>;
+  /** Short-lived link to open an excuse PDF (admin or the booking's member), or `null`. */
+  excuseDocumentUrl(path: string): Promise<string | null>;
 
   // ---------- trainer sign-up ----------
   /**
