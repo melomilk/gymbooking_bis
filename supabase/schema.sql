@@ -73,12 +73,13 @@ create table public.class_sessions (
   start_time   timestamptz not null,
   end_time     timestamptz not null,
   capacity     int not null check (capacity > 0),
+  cancelled_at timestamptz,                -- set when an admin cancels the class
   check (end_time > start_time),
   foreign key (room_id, branch_id) references public.rooms(room_id, branch_id),
   constraint no_room_overlap
-    exclude using gist (room_id with =, tstzrange(start_time, end_time) with &&),
+    exclude using gist (room_id with =, tstzrange(start_time, end_time) with &&) where (cancelled_at is null),
   constraint no_trainer_overlap
-    exclude using gist (trainer_id with =, tstzrange(start_time, end_time) with &&)
+    exclude using gist (trainer_id with =, tstzrange(start_time, end_time) with &&) where (cancelled_at is null)
 );
 create index on public.class_sessions (start_time);
 
@@ -135,6 +136,29 @@ end $$;
 create trigger trg_session_capacity
 before insert or update on public.class_sessions
 for each row execute function public.check_session_capacity();
+
+-- A class that already has bookings keeps its date, time, room and class type:
+-- members booked exactly that. To move it, the admin cancels it (cancel_session)
+-- and creates a new one. Trainer and capacity can still change.
+-- A cancelled class can't be edited at all.
+create function public.protect_booked_session() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if old.cancelled_at is not null then
+    raise exception 'session_is_cancelled';
+  end if;
+  if (new.class_id, new.room_id, new.branch_id, new.start_time, new.end_time)
+       is distinct from (old.class_id, old.room_id, old.branch_id, old.start_time, old.end_time)
+     and exists (select 1 from public.bookings
+                  where session_id = old.session_id and booking_status <> 'Cancelled') then
+    raise exception 'session_has_bookings';
+  end if;
+  return new;
+end $$;
+
+create trigger trg_protect_booked_session
+before update on public.class_sessions
+for each row execute function public.protect_booked_session();
 
 -- ---------------------------------------------------------------------
 -- ROLE HELPERS (FR-10)
@@ -196,7 +220,8 @@ select s.session_id, s.class_id, c.class_name, c.description, c.duration_min,
        s.trainer_id, t.trainer_name, s.branch_id, br.branch_name, s.room_id, r.room_name,
        s.start_time, s.end_time, s.capacity,
        (select count(*) from public.bookings b
-         where b.session_id = s.session_id and b.booking_status <> 'Cancelled')::int as spots_taken
+         where b.session_id = s.session_id and b.booking_status <> 'Cancelled')::int as spots_taken,
+       s.cancelled_at
 from public.class_sessions s
 join public.classes  c  on c.class_id   = s.class_id
 join public.trainers t  on t.trainer_id = s.trainer_id
@@ -223,7 +248,7 @@ select b.booking_id, b.member_id, b.session_id, b.booking_status, b.booking_time
        b.cancelled_at, b.fee_forfeited,
        m.member_name || ' ' || m.member_surname as member_fullname,
        c.class_name, s.trainer_id, t.trainer_name, s.branch_id, br.branch_name, r.room_name,
-       s.start_time, s.end_time
+       s.start_time, s.end_time, s.cancelled_at as session_cancelled_at
 from public.bookings b
 join public.members  m  on m.member_id  = b.member_id
 join public.class_sessions s on s.session_id = b.session_id
@@ -245,7 +270,8 @@ join public.rooms    r  on r.room_id   = s.room_id
 left join public.bookings b on b.session_id = s.session_id and b.booking_status <> 'Cancelled'
 left join public.members  m on m.member_id  = b.member_id
 where s.trainer_id = (select me.trainer_id from public.members me
-                       where me.auth_user_id = auth.uid() and me.role = 'Trainer');
+                       where me.auth_user_id = auth.uid() and me.role = 'Trainer')
+  and s.cancelled_at is null;
 
 -- Attendance report (admin only): per session, how many booked, came and
 -- missed. The attendance rate is attended / (attended + no_show).
@@ -259,7 +285,7 @@ join public.classes  c  on c.class_id   = s.class_id
 join public.trainers t  on t.trainer_id = s.trainer_id
 join public.branches br on br.branch_id = s.branch_id
 left join public.bookings b on b.session_id = s.session_id
-where public.is_admin()
+where public.is_admin() and s.cancelled_at is null
 group by s.session_id, c.class_name, t.trainer_name, br.branch_name;
 
 create view public.v_readers as
@@ -301,6 +327,9 @@ begin
   select * into v_session from public.class_sessions where session_id = p_session_id for update;
   if not found then
     return public.result(false, 'session_not_found', 'Class session not found.');
+  end if;
+  if v_session.cancelled_at is not null then
+    return public.result(false, 'session_cancelled', 'This class has been cancelled.');
   end if;
   if v_session.start_time <= now() then
     return public.result(false, 'class_started', 'This class has already started.');
@@ -389,6 +418,38 @@ begin
     return public.result(true, 'cancelled_fee_forfeited', 'Booking cancelled. The booking fee is forfeited.');
   end if;
   return public.result(true, 'cancelled', 'Booking cancelled. No fee charged.');
+end $$;
+
+-- CANCEL A WHOLE CLASS (admin). The class stays in the database (bookings point
+-- to it), is marked cancelled and disappears from the schedule. Its confirmed
+-- bookings are cancelled free of charge; members see "Cancelled by the gym".
+create function public.cancel_session(p_session_id bigint) returns jsonb
+language plpgsql security definer set search_path = public as $$
+declare
+  v_s public.class_sessions%rowtype;
+  v_n int;
+begin
+  if not public.is_admin() then
+    return public.result(false, 'forbidden', 'Only admins can cancel classes.');
+  end if;
+  select * into v_s from public.class_sessions where session_id = p_session_id for update;
+  if not found then
+    return public.result(false, 'session_not_found', 'Class session not found.');
+  end if;
+  if v_s.cancelled_at is not null then
+    return public.result(false, 'session_is_cancelled', 'This class is already cancelled.');
+  end if;
+  if v_s.start_time <= now() then
+    return public.result(false, 'class_started', 'This class has already started.');
+  end if;
+
+  update public.bookings
+     set booking_status = 'Cancelled', cancelled_at = now(), fee_forfeited = false
+   where session_id = p_session_id and booking_status = 'Confirmed';
+  get diagnostics v_n = row_count;
+  update public.class_sessions set cancelled_at = now() where session_id = p_session_id;
+  return public.result(true, 'session_cancelled_done',
+    format('Class cancelled. %s booking(s) cancelled free of charge.', v_n));
 end $$;
 
 -- CHECK-IN (spec's multi-step transaction): insert the log + mark Attended.
@@ -545,12 +606,14 @@ revoke all on function public.check_in_booking(bigint, text)      from public, a
 revoke all on function public.set_my_language(text)               from public, anon;
 revoke all on function public.mark_no_shows()                      from public, anon;
 revoke all on function public.manual_check_in(bigint)               from public, anon;
+revoke all on function public.cancel_session(bigint)                from public, anon;
 grant execute on function public.book_session(bigint)             to authenticated;
 grant execute on function public.cancel_booking(bigint, boolean)  to authenticated;
 grant execute on function public.check_in_booking(bigint, text)   to authenticated;
 grant execute on function public.set_my_language(text)            to authenticated;
 grant execute on function public.mark_no_shows()                   to authenticated;
 grant execute on function public.manual_check_in(bigint)            to authenticated;
+grant execute on function public.cancel_session(bigint)             to authenticated;
 
 revoke all on public.v_me, public.v_bookings, public.v_trainer_roster, public.v_readers from anon;
 grant select on public.v_sessions, public.v_trainers to anon, authenticated;

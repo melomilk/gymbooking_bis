@@ -146,6 +146,7 @@ supabase/
   migration_signup_rate_limit.sql  Limit on new accounts per minute (default 150)
   migration_receptionist.sql  Receptionist role for a database made from an older schema.sql
   migration_booking_rules.sql  Staff can't book, no overlapping bookings, check-in opens 30 min before start
+  migration_session_cancel.sql  Admin can cancel a class; a booked class can't be moved to another time or room
 ```
 
 ---

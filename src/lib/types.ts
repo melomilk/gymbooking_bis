@@ -30,6 +30,8 @@ export type SessionRow = {
   end_time: string;
   capacity: number;
   spots_taken: number;
+  /** set when an admin cancelled the class */
+  cancelled_at?: string | null;
 };
 
 export type Me = {
@@ -61,6 +63,8 @@ export type BookingRow = {
   room_name: string;
   start_time: string;
   end_time: string;
+  /** set when the gym cancelled the whole class */
+  session_cancelled_at?: string | null;
 };
 
 export type RosterRow = {
@@ -131,7 +135,7 @@ export interface Api {
   // ---------- public data ----------
   listBranches(): Promise<Branch[]>;
   /** Schedule with `spots_taken`. Future sessions only unless `includePast` (admin panel). */
-  listSessions(opts?: { includePast?: boolean }): Promise<SessionRow[]>;
+  listSessions(opts?: { includePast?: boolean; includeCancelled?: boolean }): Promise<SessionRow[]>;
   /** Trainer names containing `q` (FR-08). Contacts are never returned. */
   searchTrainers(q: string): Promise<Trainer[]>;
   /** Branches whose name or address contains `q` (FR-08). */
@@ -168,6 +172,12 @@ export interface Api {
   adminUpdate(entity: Entity, id: number, row: Row): Promise<Result>;
   /** Codes: `deleted`, `in_use` (still referenced), `forbidden`. */
   adminDelete(entity: Entity, id: number): Promise<Result>;
+  /**
+   * Cancels a whole class: its confirmed bookings are cancelled free of charge and
+   * it disappears from the schedule. Codes: `session_cancelled_done`, `session_is_cancelled`,
+   * `class_started`, `session_not_found`, `forbidden`.
+   */
+  cancelSession(sessionId: number): Promise<Result>;
   /** Confirmed, attended and no-show bookings from the last 12 h onward, for check-in. */
   allBookings(): Promise<BookingRow[]>;
   listReaders(): Promise<Reader[]>;

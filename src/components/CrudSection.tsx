@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Key } from "@/lib/i18n";
 import type { Result, Row } from "@/lib/types";
 import { useT } from "./Providers";
@@ -26,6 +26,12 @@ export type CrudConfig = {
   save: (id: number | null, row: Row) => Promise<Result>;
   remove?: (id: number) => Promise<Result>;
   toolbar?: React.ReactNode;
+  /** false hides Edit / Delete for this row (e.g. a cancelled class) */
+  rowEditable?: (r: Row) => boolean;
+  /** extra buttons for a row (e.g. "Cancel class") */
+  rowActions?: (r: Row) => React.ReactNode;
+  /** hint shown at the top of the edit form; id is null for a new row */
+  editorNote?: (id: number | null) => React.ReactNode;
 };
 
 export default function CrudSection({ cfg, onResult }: { cfg: CrudConfig; onResult: (r: Result) => void }) {
@@ -33,6 +39,16 @@ export default function CrudSection({ cfg, onResult }: { cfg: CrudConfig; onResu
   const [editing, setEditing] = useState<{ id: number | null; form: Form } | null>(null);
   const [deleting, setDeleting] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  const editorRef = useRef<HTMLFormElement>(null);
+
+  // The form sits above the table. Opening it for a row far down the list
+  // scrolls it into view, so the admin always sees what they are editing.
+  const editKey = editing ? String(editing.id) : null;
+  useEffect(() => {
+    if (editKey === null) return;
+    editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    editorRef.current?.querySelector<HTMLElement>("input, select, textarea")?.focus({ preventScroll: true });
+  }, [editKey]);
 
   async function submit(e: React.SyntheticEvent) {
     e.preventDefault();
@@ -65,7 +81,8 @@ export default function CrudSection({ cfg, onResult }: { cfg: CrudConfig; onResu
       </div>
 
       {editing && (
-        <form className="editor" onSubmit={submit} noValidate>
+        <form className="editor" ref={editorRef} onSubmit={submit} noValidate>
+          {cfg.editorNote?.(editing.id)}
           <div className="editor-grid">
             {cfg.fields.map((f) => (
               <label key={f.key} className={f.type === "textarea" ? "wide" : ""}>
@@ -98,10 +115,13 @@ export default function CrudSection({ cfg, onResult }: { cfg: CrudConfig; onResu
               <tr key={cfg.id(r)}>
                 {cfg.columns.map((c) => <td key={c.label}>{c.cell(r)}</td>)}
                 <td className="nowrap">
-                  <button className="btn ghost sm" onClick={() => setEditing({ id: cfg.id(r), form: cfg.toForm(r) })}>{t("edit")}</button>
-                  {cfg.canDelete !== false && cfg.remove && (
-                    <button className="btn ghost sm danger-text" onClick={() => setDeleting(cfg.id(r))}>{t("delete")}</button>
-                  )}
+                  {cfg.rowEditable?.(r) !== false && (<>
+                    <button className="btn ghost sm" onClick={() => setEditing({ id: cfg.id(r), form: cfg.toForm(r) })}>{t("edit")}</button>
+                    {cfg.canDelete !== false && cfg.remove && (
+                      <button className="btn ghost sm danger-text" onClick={() => setDeleting(cfg.id(r))}>{t("delete")}</button>
+                    )}
+                  </>)}
+                  {cfg.rowActions?.(r)}
                 </td>
               </tr>
             ))}

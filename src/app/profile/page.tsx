@@ -88,7 +88,8 @@ export default function ProfilePage() {
         </div>
         <div className="right">
           <span className={`pill ${b.booking_status.toLowerCase()}`}>
-            {t(`bs_${b.booking_status}`)}{b.fee_forfeited ? ` · ${t("fee_forfeited")}` : ""}
+            {b.booking_status === "Cancelled" && b.session_cancelled_at ? t("cancelled_by_gym") : t(`bs_${b.booking_status}`)}
+            {b.fee_forfeited ? ` · ${t("fee_forfeited")}` : ""}
           </span>
           {canCancel && <button className="btn ghost" onClick={() => cancel(b)}>{t("cancel_booking")}</button>}
         </div>

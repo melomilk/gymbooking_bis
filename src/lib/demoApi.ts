@@ -12,7 +12,7 @@ const KEY = "gym-demo-v2";
 const TZ_OFFSET_H = 5; // Asia/Almaty
 
 type DMember = MemberRow & { pw_salt: string; pw_hash: string };
-type DSession = { session_id: number; class_id: number; trainer_id: number; branch_id: number; room_id: number; start_time: string; end_time: string; capacity: number };
+type DSession = { session_id: number; class_id: number; trainer_id: number; branch_id: number; room_id: number; start_time: string; end_time: string; capacity: number; cancelled_at?: string | null };
 type DBooking = { booking_id: number; member_id: number; session_id: number; booking_status: BookingRow["booking_status"]; booking_time: string; cancelled_at: string | null; fee_forfeited: boolean };
 type DReader = { reader_id: string; branch_id: number; check_in_method: string };
 type Store = {
@@ -161,6 +161,7 @@ function vSession(st: Store, s: DSession): SessionRow {
     branch_id: s.branch_id, branch_name: st.branches.find((x) => x.branch_id === s.branch_id)!.branch_name,
     room_id: s.room_id, room_name: st.rooms.find((x) => x.room_id === s.room_id)!.room_name,
     start_time: s.start_time, end_time: s.end_time, capacity: s.capacity, spots_taken: taken(st, s.session_id),
+    cancelled_at: s.cancelled_at ?? null,
   };
 }
 
@@ -172,7 +173,7 @@ function vBooking(st: Store, b: DBooking): BookingRow {
     booking_time: b.booking_time, cancelled_at: b.cancelled_at, fee_forfeited: b.fee_forfeited,
     member_fullname: `${m.member_name} ${m.member_surname}`, class_name: s.class_name, trainer_id: s.trainer_id,
     trainer_name: s.trainer_name, branch_id: s.branch_id, branch_name: s.branch_name, room_name: s.room_name,
-    start_time: s.start_time, end_time: s.end_time,
+    start_time: s.start_time, end_time: s.end_time, session_cancelled_at: s.cancelled_at ?? null,
   };
 }
 
@@ -216,7 +217,7 @@ function validate(st: Store, entity: Entity, row: Row, id: number | null): strin
       if (new Date(cand.end_time) <= new Date(cand.start_time)) return "invalid_time";
       if (num(row.capacity) > room.max_capacity) return "capacity_exceeds_room";
       if (id !== null && num(row.capacity) < taken(st, id)) return "capacity_below_bookings";
-      const rest = st.sessions.filter((s) => s.session_id !== id);
+      const rest = st.sessions.filter((s) => s.session_id !== id && !s.cancelled_at); // a cancelled class frees its room / trainer
       if (rest.some((s) => s.room_id === room.room_id && overlaps(s, cand))) return "room_overlap";
       if (rest.some((s) => s.trainer_id === num(row.trainer_id) && overlaps(s, cand))) return "trainer_overlap";
       return null;
@@ -334,6 +335,7 @@ export const demoApi: Api = {
     const now = Date.now();
     return st.sessions
       .filter((s) => opts?.includePast || new Date(s.start_time).getTime() > now)
+      .filter((s) => opts?.includeCancelled || !s.cancelled_at)
       .map((s) => vSession(st, s))
       .sort((a, b) => a.start_time.localeCompare(b.start_time));
   },
@@ -372,6 +374,7 @@ export const demoApi: Api = {
     if (m.role === "Admin" || m.role === "Receptionist") return no("staff_cannot_book");
     const s = st.sessions.find((x) => x.session_id === sessionId);
     if (!s) return no("session_not_found");
+    if (s.cancelled_at) return no("session_cancelled");
     if (new Date(s.start_time).getTime() <= Date.now()) return no("class_started");
     if (m.membership_status === "Suspended") return no("membership_suspended");
     if (m.membership_expiry < almatyYmd(s.start_time)) return no("membership_expired");
@@ -415,7 +418,7 @@ export const demoApi: Api = {
     if (m?.role !== "Trainer" || m.trainer_id === null) return [];
     const cutoff = Date.now() - 12 * 3600_000;
     const rows: RosterRow[] = [];
-    for (const s of st.sessions.filter((x) => x.trainer_id === m.trainer_id && new Date(x.end_time).getTime() > cutoff)) {
+    for (const s of st.sessions.filter((x) => x.trainer_id === m.trainer_id && !x.cancelled_at && new Date(x.end_time).getTime() > cutoff)) {
       const v = vSession(st, s);
       const base = { session_id: s.session_id, class_name: v.class_name, branch_name: v.branch_name, room_name: v.room_name,
         start_time: s.start_time, end_time: s.end_time, capacity: s.capacity };
@@ -458,6 +461,16 @@ export const demoApi: Api = {
     const row = coerce(raw);
     const err = validate(st, entity, { ...target, ...row }, id);
     if (err) return no(err);
+    if (entity === "class_sessions") {
+      // same rule as the protect_booked_session trigger in schema.sql
+      const s = target as unknown as DSession;
+      if (s.cancelled_at) return no("session_is_cancelled");
+      const next = { ...target, ...row };
+      const ms = (v: unknown) => new Date(String(v)).getTime();
+      const moved = (["class_id", "room_id", "branch_id"] as const).some((k) => next[k] !== target[k])
+        || ms(next.start_time) !== ms(s.start_time) || ms(next.end_time) !== ms(s.end_time);
+      if (moved && taken(st, id) > 0) return no("session_has_bookings");
+    }
     Object.assign(target, row);
     save(st);
     return ok("updated");
@@ -473,6 +486,24 @@ export const demoApi: Api = {
     list.splice(i, 1);
     save(st);
     return ok("deleted");
+  },
+
+  async cancelSession(sessionId) {
+    const st = await load();
+    if (!isAdmin(st)) return no("forbidden");
+    const s = st.sessions.find((x) => x.session_id === sessionId);
+    if (!s) return no("session_not_found");
+    if (s.cancelled_at) return no("session_is_cancelled");
+    if (new Date(s.start_time).getTime() <= Date.now()) return no("class_started");
+    const at = nowIso();
+    for (const b of st.bookings) {
+      if (b.session_id === sessionId && b.booking_status === "Confirmed") {
+        Object.assign(b, { booking_status: "Cancelled", cancelled_at: at, fee_forfeited: false });
+      }
+    }
+    s.cancelled_at = at;
+    save(st);
+    return ok("session_cancelled_done");
   },
 
   async allBookings() {
@@ -528,7 +559,7 @@ export const demoApi: Api = {
     const st = await load();
     if (!isAdmin(st)) return [];
     return st.sessions
-      .filter((s) => new Date(s.end_time).getTime() < Date.now())
+      .filter((s) => !s.cancelled_at && new Date(s.end_time).getTime() < Date.now())
       .sort((a, b) => b.start_time.localeCompare(a.start_time))
       .slice(0, 100)
       .map<AttendanceRow>((s) => {

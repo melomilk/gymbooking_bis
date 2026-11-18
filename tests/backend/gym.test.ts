@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { demoApi as api } from "../../src/lib/demoApi";
-import { H, DAY, ADMIN, loginAdmin, registerMember, firstSession, adminCreateSession } from "./helpers";
+import { H, DAY, ADMIN, TRAINER, loginAdmin, registerMember, firstSession, adminCreateSession } from "./helpers";
 
 describe("Registration & login (FR-04)", () => {
   it("TC-01 register: valid data creates a Member account and logs in", async () => {
@@ -254,5 +254,68 @@ describe("Fixes from the manual test table (cases 2-5)", () => {
     expect(await api.checkIn(booking.booking_id, "NFC-DT-01")).toMatchObject({ ok: false, code: "checkin_too_early" });
     expect((await api.allBookings()).find((x) => x.booking_id === booking.booking_id)!.booking_status).toBe("Confirmed");
     expect(memberId).toBe(booking.member_id);
+  });
+});
+
+describe("Fixes from the manual test table (cases 6-9)", () => {
+  it("TC-25 admin cancels a class: bookings cancelled free, class leaves the schedule, member sees 'cancelled by the gym'", async () => {
+    const s = await adminCreateSession(2 * H);
+    const m = await registerMember();
+    expect(await api.book(s.session_id)).toMatchObject({ ok: true });
+    await api.logout();
+    await loginAdmin();
+    expect(await api.adminDelete("class_sessions", s.session_id)).toMatchObject({ ok: false, code: "in_use" }); // delete stays refused
+    expect(await api.cancelSession(s.session_id)).toMatchObject({ ok: true, code: "session_cancelled_done" });
+    expect(await api.cancelSession(s.session_id)).toMatchObject({ ok: false, code: "session_is_cancelled" });
+    const adminView = (await api.listSessions({ includePast: true, includeCancelled: true })).find((x) => x.session_id === s.session_id)!;
+    expect(adminView.cancelled_at).toBeTruthy();
+    await api.logout();
+    await api.login("+77011112233", "secret123");
+    expect((await api.listSessions()).some((x) => x.session_id === s.session_id)).toBe(false);
+    const [b] = await api.myBookings(m.member_id);
+    expect(b).toMatchObject({ booking_status: "Cancelled", fee_forfeited: false });
+    expect(b.session_cancelled_at).toBeTruthy();
+    expect(await api.book(s.session_id)).toMatchObject({ ok: false, code: "session_cancelled" });
+  });
+
+  it("TC-26 only admins can cancel a class; a cancelled class frees its room and trainer for a new one", async () => {
+    const s = await adminCreateSession(3 * H);
+    await registerMember();
+    expect(await api.cancelSession(s.session_id)).toMatchObject({ ok: false, code: "forbidden" });
+    await api.logout();
+    await loginAdmin();
+    expect(await api.cancelSession(s.session_id)).toMatchObject({ ok: true });
+    await api.logout();
+    const again = await adminCreateSession(3 * H); // same room, trainer and time: throws if still blocked
+    expect(again.session_id).not.toBe(s.session_id);
+  });
+
+  it("TC-27 a booked class keeps its date, time, room and class; trainer and capacity can still change", async () => {
+    const s = await adminCreateSession(5 * H);
+    await registerMember();
+    await api.book(s.session_id);
+    await api.logout();
+    await loginAdmin();
+    const base = { class_id: s.class_id, trainer_id: s.trainer_id, room_id: s.room_id, branch_id: s.branch_id,
+      start_time: s.start_time, end_time: s.end_time, capacity: s.capacity };
+    const shift = (iso: string) => new Date(new Date(iso).getTime() + H).toISOString();
+    expect(await api.adminUpdate("class_sessions", s.session_id, { ...base, start_time: shift(s.start_time), end_time: shift(s.end_time) }))
+      .toMatchObject({ ok: false, code: "session_has_bookings" });
+    expect(await api.adminUpdate("class_sessions", s.session_id, { ...base, room_id: 1 })).toMatchObject({ ok: false, code: "session_has_bookings" });
+    expect(await api.adminUpdate("class_sessions", s.session_id, { ...base, class_id: 1 })).toMatchObject({ ok: false, code: "session_has_bookings" });
+    expect(await api.adminUpdate("class_sessions", s.session_id, { ...base, trainer_id: 2, capacity: 12 })).toMatchObject({ ok: true, code: "updated" });
+  });
+
+  it("TC-28 changing a class's trainer moves it from the old trainer's 'My classes' (bug 9 regression)", async () => {
+    const s = await adminCreateSession(4 * H, { trainerId: 1 }); // trainer 1 = the demo trainer account
+    await api.login(TRAINER.phone, TRAINER.password);
+    expect((await api.trainerRoster()).some((x) => x.session_id === s.session_id)).toBe(true);
+    await api.logout();
+    await loginAdmin();
+    expect(await api.adminUpdate("class_sessions", s.session_id, { class_id: s.class_id, trainer_id: 3, room_id: s.room_id,
+      branch_id: s.branch_id, start_time: s.start_time, end_time: s.end_time, capacity: s.capacity })).toMatchObject({ ok: true });
+    await api.logout();
+    await api.login(TRAINER.phone, TRAINER.password);
+    expect((await api.trainerRoster()).some((x) => x.session_id === s.session_id)).toBe(false);
   });
 });

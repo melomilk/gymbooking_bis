@@ -42,10 +42,11 @@ export default function AdminPage() {
   const [showPast, setShowPast] = useState(false);
   const [readerId, setReaderId] = useState("");
   const [toast, setToast] = useState<ToastMsg>(null);
+  const [cancelling, setCancelling] = useState<SessionRow | null>(null);
 
   const load = useCallback(async () => {
     const [sessions, classes, trainers, branches, rooms, members, bookings, readers, report, applications] = await Promise.all([
-      api.listSessions({ includePast: true }), api.adminList("classes"), api.adminList("trainers"), api.adminList("branches"),
+      api.listSessions({ includePast: true, includeCancelled: true }), api.adminList("classes"), api.adminList("trainers"), api.adminList("branches"),
       api.adminList("rooms"), api.adminList("members"), api.allBookings(), api.listReaders(), api.attendanceReport(),
       api.listTrainerApplications(),
     ]);
@@ -80,7 +81,7 @@ export default function AdminPage() {
     id: (r) => Number(r.session_id),
     columns: [
       { label: "f_date", cell: (r) => <span className="nowrap">{fmtDayShort(s(r.start_time), lang)}, {fmtTime(s(r.start_time))}–{fmtTime(s(r.end_time))}</span> },
-      { label: "f_class", cell: (r) => <b>{s(r.class_name)}</b> },
+      { label: "f_class", cell: (r) => <><b>{s(r.class_name)}</b>{r.cancelled_at ? <> <span className="pill cancelled">{t("session_cancelled_pill")}</span></> : null}</> },
       { label: "f_trainer", cell: (r) => s(r.trainer_name) },
       { label: "f_room", cell: (r) => `${s(r.branch_name)} · ${s(r.room_name)}` },
       { label: "f_capacity", cell: (r) => s(r.capacity) },
@@ -118,6 +119,14 @@ export default function AdminPage() {
         start_time: toIso(f.date, f.start), end_time: toIso(f.date, f.end), capacity: Number(f.capacity) };
     },
     ...crud("class_sessions"),
+    // a cancelled class can't be edited or deleted; an upcoming one can be cancelled
+    rowEditable: (r) => !r.cancelled_at,
+    rowActions: (r) => !r.cancelled_at && new Date(s(r.start_time)).getTime() > now ? (
+      <button className="btn ghost sm danger-text" onClick={() => setCancelling(r as unknown as SessionRow)}>{t("cancel_class")}</button>
+    ) : null,
+    // members booked this exact date, time and place: only trainer and capacity may change
+    editorNote: (id) => id !== null && (data.sessions.find((x) => x.session_id === id)?.spots_taken ?? 0) > 0
+      ? <p className="small warn-text">{t("session_booked_note")}</p> : null,
     toolbar: <label className="check"><input type="checkbox" checked={showPast} onChange={(e) => setShowPast(e.target.checked)} /> {t("show_past")}</label>,
   };
 
@@ -283,6 +292,19 @@ export default function AdminPage() {
             </ul>
           )}
         </>
+      )}
+      {cancelling && (
+        <Modal title={t("cancel_class_title")} onClose={() => setCancelling(null)} actions={<>
+          <button className="btn ghost" onClick={() => setCancelling(null)}>{t("discard")}</button>
+          <button className="btn danger" onClick={async () => {
+            const id = cancelling.session_id;
+            setCancelling(null);
+            onResult(await api.cancelSession(id));
+          }}>{t("cancel_class_yes")}</button>
+        </>}>
+          <p>{t("cancel_class_body", { n: cancelling.spots_taken })}</p>
+          <p className="small muted">{cancelling.class_name} · {fmtDayShort(cancelling.start_time, lang)}, {fmtTime(cancelling.start_time)}–{fmtTime(cancelling.end_time)} · {cancelling.trainer_name}</p>
+        </Modal>
       )}
       <Toast msg={toast} onDone={() => setToast(null)} />
     </>
