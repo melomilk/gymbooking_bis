@@ -11,6 +11,7 @@ import { EXCUSE_DOC_TYPES, EXCUSE_REASONS } from "@/lib/types";
 import type { AttendanceRow, BookingRow, Branch, ClassType, Entity, MemberRow, Reader, Result, Room, Row, SessionRow, Trainer } from "@/lib/types";
 import type { Key } from "@/lib/i18n";
 import { attendanceRate, fmtRate, LOW_ATTENDANCE } from "@/lib/stats";
+import { useSessionState } from "@/lib/useSessionState";
 
 type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "applications" | "checkin" | "noshows" | "report";
 const TABS: { id: Tab; label: Key }[] = [
@@ -38,10 +39,10 @@ const n = (v: string) => (v.trim() === "" ? null : Number(v));
 export default function AdminPage() {
   const { allowed } = useRequireRole(["Admin"]); // FR-10
   const { t, tr, lang } = useT();
-  const [tab, setTab] = useState<Tab>("sessions");
+  const [tab, setTab] = useSessionState<Tab>("admin.tab", "sessions"); // remembered (bug 19)
   const [data, setData] = useState<Data | null>(null);
-  const [showPast, setShowPast] = useState(false);
-  const [readerId, setReaderId] = useState("");
+  const [showPast, setShowPast] = useSessionState("admin.showPast", false);
+  const [readerId, setReaderId] = useSessionState("admin.reader", "");
   const [toast, setToast] = useState<ToastMsg>(null);
   const [cancelling, setCancelling] = useState<SessionRow | null>(null);
 
@@ -259,7 +260,7 @@ export default function AdminPage() {
       ) : tab === "applications" ? (
         <TrainerApplications rows={data.applications} onResult={onResult} />
       ) : tab !== "checkin" ? (
-        <CrudSection key={tab} cfg={configs[tab]!} onResult={onResult} />
+        <CrudSection key={tab} storageKey={`admin.${tab}`} cfg={configs[tab]!} onResult={onResult} />
       ) : (
         <>
           <p className="muted small">{t("checkin_desc")}</p>
@@ -362,6 +363,21 @@ function TrainerApplications({ rows, onResult }: { rows: TrainerApplication[]; o
   const [rejecting, setRejecting] = useState<TrainerApplication | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState<number | null>(null);
+  // Bug 18: links to the files are prepared when the list loads, so a click is a normal
+  // link that opens at once (no empty tab waiting for the link). undefined = still loading.
+  const [urls, setUrls] = useState<Record<string, string | null>>({});
+  useEffect(() => {
+    let alive = true;
+    const made: string[] = [];
+    const paths = rows.flatMap((a) => a.certificates.map((c) => c.path));
+    Promise.all(paths.map(async (p) => {
+      let url = await api.certificateUrl(p);
+      // demo mode keeps files as data: URLs, which browsers won't open in a new tab
+      if (url?.startsWith("data:")) { url = URL.createObjectURL(await (await fetch(url)).blob()); made.push(url); }
+      return [p, url] as const;
+    })).then((pairs) => { if (alive) setUrls(Object.fromEntries(pairs)); });
+    return () => { alive = false; made.forEach((u) => URL.revokeObjectURL(u)); };
+  }, [rows]);
 
   async function decide(a: TrainerApplication, approve: boolean, why?: string) {
     setBusy(a.application_id);
@@ -402,7 +418,9 @@ function TrainerApplications({ rows, onResult }: { rows: TrainerApplication[]; o
             <div className="small"><b>{t("app_files")}:</b>{" "}
               {a.certificates.map((c, i) => (
                 <span key={c.path}>{i > 0 && ", "}
-                  <button className="link" onClick={() => openFile(c.path)}>{c.name}</button>
+                  {urls[c.path] ? <a href={urls[c.path]!} target="_blank" rel="noopener noreferrer">{c.name}</a>
+                    : urls[c.path] === null ? <span className="muted" title={t("app_no_file")}>{c.name}</span>
+                    : <button className="link" onClick={() => openFile(c.path)}>{c.name}</button>}
                 </span>
               ))}
             </div>

@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { DEMO_ACCOUNTS } from "@/lib/demoApi";
-import { MIN_PASSWORD } from "@/lib/validate";
+import { formatPhone, MIN_PASSWORD } from "@/lib/validate";
 import { useAuth, useT } from "@/components/Providers";
 import TrainerFields, { emptyTrainerForm, focusFirstInvalid, sendApplication, trainerFormError, type TrainerForm } from "@/components/TrainerFields";
 
@@ -47,7 +47,7 @@ export default function LoginPage() {
     if (!r.ok) {
       setBusy(false);
       // wrong login: empty the password box so the user types it again from scratch
-      if (mode === "in") {
+      if (mode === "in" && r.code === "bad_credentials") {
         setF((cur) => ({ ...cur, password: "" }));
         setTimeout(() => passwordRef.current?.focus(), 0);
       }
@@ -95,7 +95,8 @@ export default function LoginPage() {
             <label>{t("last_name")}<input name="surname" required value={f.surname} onChange={set("surname")} autoComplete="family-name" /></label>
           </div>
         )}
-        <label>{t("phone")}<input name="phone" type="tel" required value={f.phone} onChange={set("phone")} placeholder="+7 701 123 4567" autoComplete="tel" /></label>
+        <label>{t("phone")}<input name="phone" type="tel" required value={f.phone} onChange={set("phone")} placeholder="+7 701 123 45 67" autoComplete="tel"
+          onBlur={() => setF((cur) => ({ ...cur, phone: formatPhone(cur.phone) }))} /* any format -> +7 701 123 45 67 (bug 17) */ /></label>
         <label>{t("password")}
           <input ref={passwordRef} name="password" type="password" required minLength={MIN_PASSWORD} value={f.password} onChange={set("password")} autoComplete={mode === "in" ? "current-password" : "new-password"} />
           {mode === "up" && <span className="small muted">{t("password_hint")}</span>}

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { demoApi as api } from "../../src/lib/demoApi";
 import { H, DAY, ADMIN, TRAINER, loginAdmin, registerMember, firstSession, adminCreateSession } from "./helpers";
+import { formatPhone } from "../../src/lib/validate";
 
 describe("Registration & login (FR-04)", () => {
   it("TC-01 register: valid data creates a Member account and logs in", async () => {
@@ -398,5 +399,46 @@ describe("Excused no-show (valid reason)", () => {
     // a booking that is not a no-show can't be excused
     const upcoming = (await api.allBookings()).find((x) => x.booking_status === "Confirmed");
     if (upcoming) expect(await api.excuseNoShow(upcoming.booking_id, { reason: "Work", note: "", file: null })).toMatchObject({ code: "not_no_show" });
+  });
+});
+
+describe("Manual test table, cases 16-17", () => {
+  it("TC-31 phone: every way of writing the same number logs into the same account", async () => {
+    await registerMember("7771234567", "secret123"); // 10 digits, no +7
+    await api.logout();
+    for (const p of ["+7 777 123 45 67", "87771234567", "+7(777)123-45-67", "007 777 123 4567", "77771234567"]) {
+      expect(await api.login(p, "secret123")).toMatchObject({ ok: true });
+      await api.logout();
+    }
+    expect(await api.login("777777777", "secret123")).toMatchObject({ ok: false, code: "invalid_phone" }); // 9 digits
+    expect(formatPhone("87771234567")).toBe("+7 777 123 45 67");
+    expect(formatPhone("+7(777)1234567")).toBe("+7 777 123 45 67");
+  });
+
+  it("TC-32 trainer application: a pending one can be corrected and sent again; a reviewed one can't", async () => {
+    // files over the demo size limit are listed by name only (no FileReader in Node)
+    const pdf = (name: string) => new File([new Uint8Array(701 * 1024)], name, { type: "application/pdf" });
+    await registerMember("+77011112233", "secret123");
+    const input = { email: "coach@mail.kz", specialization: "Yoga", experience_years: 3, bio: "" };
+    expect(await api.submitTrainerApplication(input, [pdf("one.pdf"), pdf("two.pdf")])).toMatchObject({ ok: true });
+    const sent = (await api.myTrainerApplication())!;
+
+    // fix the specialization, drop one file, add a new one
+    expect(await api.updateTrainerApplication({ ...input, specialization: "Pilates" }, [sent.certificates[0]], [pdf("three.pdf")]))
+      .toMatchObject({ ok: true, code: "application_updated" });
+    const updated = (await api.myTrainerApplication())!;
+    expect(updated.application_id).toBe(sent.application_id);
+    expect(updated.status).toBe("Pending");
+    expect(updated.specialization).toBe("Pilates");
+    expect(updated.certificates.map((c) => c.name)).toEqual(["one.pdf", "three.pdf"]);
+    expect(await api.updateTrainerApplication(input, [], [])).toMatchObject({ ok: false, code: "certificates_required" });
+
+    // reviewed -> can't be edited any more
+    await api.logout();
+    await loginAdmin();
+    expect(await api.reviewTrainerApplication(sent.application_id, false, "Unreadable files")).toMatchObject({ ok: true });
+    await api.logout();
+    await api.login("+77011112233", "secret123");
+    expect(await api.updateTrainerApplication(input, [], [pdf("x.pdf")])).toMatchObject({ ok: false, code: "application_not_pending" });
   });
 });

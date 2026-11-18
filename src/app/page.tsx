@@ -7,6 +7,7 @@ import Toast, { type ToastMsg } from "@/components/Toast";
 import Modal from "@/components/Modal";
 import { dayKey, fmtDate, fmtDayLong, fmtDayShort, fmtTime, FREE_CANCEL_MS } from "@/lib/format";
 import type { Branch, SessionRow } from "@/lib/types";
+import { useSessionState } from "@/lib/useSessionState";
 
 type Alt = { session: SessionRow; options: SessionRow[]; reason: string };
 
@@ -21,9 +22,10 @@ export default function SchedulePage() {
   const [toast, setToast] = useState<ToastMsg>(null);
   const [alt, setAlt] = useState<Alt | null>(null);
   const [confirmBook, setConfirmBook] = useState<SessionRow | null>(null);
-  const [branch, setBranch] = useState("all");
-  const [cls, setCls] = useState("all");
-  const [day, setDay] = useState("all");
+  // remembered while the user visits other pages (bug 19)
+  const [branchSel, setBranch] = useSessionState("classes.branch", "all");
+  const [clsSel, setCls] = useSessionState("classes.class", "all");
+  const [daySel, setDay] = useSessionState("classes.day", "all");
   const [appPending, setAppPending] = useState(false);
 
   useEffect(() => {
@@ -44,6 +46,10 @@ export default function SchedulePage() {
 
   const classNames = useMemo(() => Array.from(new Set(sessions.map((s) => s.class_name))).sort(), [sessions]);
   const days = useMemo(() => Array.from(new Set(sessions.map((s) => dayKey(s.start_time)))), [sessions]);
+  // a remembered choice that no longer exists (e.g. that day has passed) falls back to "all"
+  const branch = branchSel === "all" || branches.some((b) => String(b.branch_id) === branchSel) ? branchSel : "all";
+  const cls = clsSel === "all" || classNames.includes(clsSel) ? clsSel : "all";
+  const day = daySel === "all" || days.includes(daySel) ? daySel : "all";
   const shown = sessions.filter((s) =>
     (branch === "all" || String(s.branch_id) === branch) && (cls === "all" || s.class_name === cls) && (day === "all" || dayKey(s.start_time) === day));
   const groups = useMemo(() => {

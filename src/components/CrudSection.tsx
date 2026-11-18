@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Key } from "@/lib/i18n";
 import type { Result, Row } from "@/lib/types";
+import { useSessionState } from "@/lib/useSessionState";
 import { useT } from "./Providers";
 import Modal from "./Modal";
 
@@ -34,9 +35,17 @@ export type CrudConfig = {
   editorNote?: (id: number | null) => React.ReactNode;
 };
 
-export default function CrudSection({ cfg, onResult }: { cfg: CrudConfig; onResult: (r: Result) => void }) {
+export default function CrudSection({ cfg, onResult, storageKey }: {
+  cfg: CrudConfig; onResult: (r: Result) => void;
+  /** remembers an open edit form (with what was typed) while the admin visits other pages */
+  storageKey?: string;
+}) {
   const { t } = useT();
-  const [editing, setEditing] = useState<{ id: number | null; form: Form } | null>(null);
+  const [editing, setEditing] = useSessionState<{ id: number | null; form: Form } | null>(storageKey ? `${storageKey}.editing` : null, null);
+  // a remembered form for a row that is gone (deleted, cancelled, hidden) is dropped
+  useEffect(() => {
+    if (editing && editing.id !== null && !cfg.rows.some((r) => cfg.id(r) === editing.id && cfg.rowEditable?.(r) !== false)) setEditing(null);
+  }, [editing, cfg, setEditing]);
   const [deleting, setDeleting] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const editorRef = useRef<HTMLFormElement>(null);
