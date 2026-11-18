@@ -6,22 +6,23 @@ import CrudSection, { type CrudConfig, type Form } from "@/components/CrudSectio
 import Toast, { type ToastMsg } from "@/components/Toast";
 import { CHECKIN_OPENS_MS, dayKey, fmtDate, fmtDayShort, fmtTime, toIso } from "@/lib/format";
 import Modal from "@/components/Modal";
-import type { TrainerApplication } from "@/lib/types";
+import type { ExcuseReason, TrainerApplication } from "@/lib/types";
+import { EXCUSE_DOC_TYPES, EXCUSE_REASONS } from "@/lib/types";
 import type { AttendanceRow, BookingRow, Branch, ClassType, Entity, MemberRow, Reader, Result, Room, Row, SessionRow, Trainer } from "@/lib/types";
 import type { Key } from "@/lib/i18n";
 import { attendanceRate, fmtRate, LOW_ATTENDANCE } from "@/lib/stats";
 
-type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "applications" | "checkin" | "report";
+type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "applications" | "checkin" | "noshows" | "report";
 const TABS: { id: Tab; label: Key }[] = [
   { id: "sessions", label: "tab_sessions" }, { id: "classes", label: "tab_classes" }, { id: "trainers", label: "tab_trainers" },
   { id: "branches", label: "tab_branches" }, { id: "rooms", label: "tab_rooms" }, { id: "members", label: "tab_members" },
   { id: "applications", label: "tab_applications" },
-  { id: "checkin", label: "tab_checkin" }, { id: "report", label: "tab_report" },
+  { id: "checkin", label: "tab_checkin" }, { id: "noshows", label: "tab_noshows" }, { id: "report", label: "tab_report" },
 ];
 
 type Data = {
   sessions: SessionRow[]; classes: ClassType[]; trainers: Trainer[]; branches: Branch[]; rooms: Room[];
-  members: MemberRow[]; bookings: BookingRow[]; readers: Reader[]; report: AttendanceRow[];
+  members: MemberRow[]; bookings: BookingRow[]; readers: Reader[]; report: AttendanceRow[]; noShows: BookingRow[];
   applications: TrainerApplication[];
 };
 
@@ -45,13 +46,13 @@ export default function AdminPage() {
   const [cancelling, setCancelling] = useState<SessionRow | null>(null);
 
   const load = useCallback(async () => {
-    const [sessions, classes, trainers, branches, rooms, members, bookings, readers, report, applications] = await Promise.all([
+    const [sessions, classes, trainers, branches, rooms, members, bookings, readers, report, applications, noShows] = await Promise.all([
       api.listSessions({ includePast: true, includeCancelled: true }), api.adminList("classes"), api.adminList("trainers"), api.adminList("branches"),
       api.adminList("rooms"), api.adminList("members"), api.allBookings(), api.listReaders(), api.attendanceReport(),
-      api.listTrainerApplications(),
+      api.listTrainerApplications(), api.noShowBookings(),
     ]);
     setData({ sessions, classes: classes as ClassType[], trainers: trainers as Trainer[], branches: branches as Branch[],
-      rooms: rooms as Room[], members: members as MemberRow[], bookings, readers, report, applications });
+      rooms: rooms as Room[], members: members as MemberRow[], bookings, readers, report, applications, noShows });
     setReaderId((cur) => cur || readers[0]?.reader_id || "");
   }, []);
 
@@ -253,6 +254,8 @@ export default function AdminPage() {
 
       {tab === "report" ? (
         <AttendanceReport rows={data.report} />
+      ) : tab === "noshows" ? (
+        <NoShows rows={data.noShows} onResult={onResult} />
       ) : tab === "applications" ? (
         <TrainerApplications rows={data.applications} onResult={onResult} />
       ) : tab !== "checkin" ? (
@@ -423,6 +426,98 @@ function TrainerApplications({ rows, onResult }: { rows: TrainerApplication[]; o
           <label className="form">{t("reject_reason_label")}
             <textarea rows={3} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
           </label>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+// ---------- Excused no-show: valid reason -> booking cancelled, fee returned ----------
+// Not the same as "Mark attended": that one means the member came (NFC failed).
+function NoShows({ rows, onResult }: { rows: BookingRow[]; onResult: (r: Result) => void }) {
+  const { t, lang } = useT();
+  const [excusing, setExcusing] = useState<BookingRow | null>(null);
+  const [reason, setReason] = useState<ExcuseReason | "">("");
+  const [note, setNote] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function close() {
+    setExcusing(null); setReason(""); setNote(""); setFile(null);
+  }
+
+  async function save() {
+    if (!excusing) return;
+    setBusy(true);
+    const r = await api.excuseNoShow(excusing.booking_id, { reason: reason as ExcuseReason, note, file });
+    setBusy(false);
+    if (r.ok) close();
+    onResult(r); // reloads the lists on success
+  }
+
+  async function openDoc(path: string) {
+    const w = window.open("", "_blank"); // open first, so popup blockers allow it
+    let url = await api.excuseDocumentUrl(path);
+    if (url?.startsWith("data:")) url = URL.createObjectURL(await (await fetch(url)).blob());
+    if (url && w) w.location.href = url;
+    else { w?.close(); onResult({ ok: false, code: "error", message: t("app_no_file") }); }
+  }
+
+  return (
+    <>
+      <p className="muted small">{t("noshows_desc")}</p>
+      {rows.length === 0 ? <p className="muted">{t("noshows_empty")}</p> : (
+        <ul className="list">
+          {rows.map((b) => (
+            <li key={b.booking_id} className="row-item" data-booking={b.booking_id}>
+              <div>
+                <b>{b.member_fullname}</b> <span className="muted">· {b.class_name}</span>
+                <div className="small muted">{fmtDayShort(b.start_time, lang)}, {fmtTime(b.start_time)} · {b.branch_name}, {b.room_name}</div>
+                {b.excuse_reason && (
+                  <div className="small">
+                    {t("excused_label", { reason: t(`er_${b.excuse_reason}`) })}
+                    {b.excuse_note && <span className="muted"> · {b.excuse_note}</span>}
+                    {b.excuse_document && <> · <button className="link" onClick={() => openDoc(b.excuse_document!)}>{t("excuse_doc_open")}</button></>}
+                  </div>
+                )}
+              </div>
+              <div className="right">
+                <span className={`pill ${b.booking_status.toLowerCase()}`}>
+                  {t(`bs_${b.booking_status}`)}{b.fee_forfeited ? ` · ${t("fee_forfeited")}` : ""}
+                </span>
+                {b.booking_status === "No-show" && (
+                  <button className="btn ghost" onClick={() => setExcusing(b)}>{t("excuse_btn")}</button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {excusing && (
+        <Modal title={t("excuse_title")} onClose={close} actions={<>
+          <button className="btn ghost" onClick={close}>{t("close")}</button>
+          <button className="btn" disabled={busy || !reason || (reason === "Illness" && !file) || (reason === "Other" && !note.trim())}
+            onClick={save}>{t("excuse_save")}</button>
+        </>}>
+          <p><b>{excusing.member_fullname}</b> · {excusing.class_name} · {fmtDayShort(excusing.start_time, lang)}, {fmtTime(excusing.start_time)}</p>
+          <div className="form">
+            <label>{t("excuse_reason_label")}
+              <select value={reason} onChange={(e) => setReason(e.target.value as ExcuseReason)}>
+                <option value="" disabled>{t("excuse_choose")}</option>
+                {EXCUSE_REASONS.map((r) => <option key={r} value={r}>{t(`er_${r}`)}</option>)}
+              </select>
+            </label>
+            {reason === "Illness" && (
+              <label>{t("excuse_doc_label")}
+                <input type="file" accept={EXCUSE_DOC_TYPES.join(",")} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+              </label>
+            )}
+            <label>{reason === "Other" ? t("excuse_note_required") : t("excuse_note_label")}
+              <textarea rows={2} maxLength={500} value={note} onChange={(e) => setNote(e.target.value)} />
+            </label>
+          </div>
+          <p className="small muted">{t("excuse_warning")}</p>
         </Modal>
       )}
     </>
