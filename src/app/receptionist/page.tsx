@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useRequireRole, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
-import { fmtDayShort, fmtTime } from "@/lib/format";
+import { CHECKIN_OPENS_MS, fmtDayShort, fmtTime } from "@/lib/format";
 import type { BookingRow, Reader, Result } from "@/lib/types";
 
 export default function ReceptionistPage() {
@@ -84,9 +84,13 @@ export default function ReceptionistPage() {
               </div>
               <div className="right">
                 <span className={`pill ${b.booking_status.toLowerCase()}`}>{t(`bs_${b.booking_status}`)}</span>
+                {/* check-in opens 30 min before the start */}
+                {b.booking_status === "Confirmed" && new Date(b.start_time).getTime() - now > CHECKIN_OPENS_MS && (
+                  <span className="small muted">{t("checkin_opens_note")}</span>
+                )}
                 <button
                   className="btn"
-                  disabled={b.booking_status !== "Confirmed" || !readerId}
+                  disabled={b.booking_status !== "Confirmed" || !readerId || new Date(b.start_time).getTime() - now > CHECKIN_OPENS_MS}
                   onClick={async () => onResult(await api.checkIn(b.booking_id, readerId))}
                 >
                   {t("tap")}

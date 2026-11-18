@@ -287,9 +287,15 @@ declare
   v_has_old  boolean;
   v_taken    int;
 begin
-  select * into v_member from public.members where auth_user_id = auth.uid();
+  -- the member row is locked too, so two parallel bookings of the same
+  -- member can't both pass the time-conflict check below
+  select * into v_member from public.members where auth_user_id = auth.uid() for update;
   if not found then
     return public.result(false, 'not_signed_in', 'Please log in to book a class.');
+  end if;
+  -- staff accounts run the gym; they don't book classes
+  if v_member.role in ('Admin', 'Receptionist') then
+    return public.result(false, 'staff_cannot_book', 'Staff accounts cannot book classes. Please use a member account.');
   end if;
 
   select * into v_session from public.class_sessions where session_id = p_session_id for update;
@@ -311,6 +317,19 @@ begin
   v_has_old := found;   -- FOUND is reset by the next query
   if v_has_old and v_existing.booking_status <> 'Cancelled' then
     return public.result(false, 'already_booked', 'You have already booked this class');
+  end if;
+
+  -- a member can't be in two classes at the same time
+  if exists (
+    select 1
+      from public.bookings b
+      join public.class_sessions s on s.session_id = b.session_id
+     where b.member_id = v_member.member_id
+       and b.session_id <> p_session_id
+       and b.booking_status in ('Confirmed', 'Attended')
+       and tstzrange(s.start_time, s.end_time) && tstzrange(v_session.start_time, v_session.end_time)
+  ) then
+    return public.result(false, 'time_conflict', 'You already have another class booked at this time.');
   end if;
 
   select count(*) into v_taken from public.bookings
@@ -379,6 +398,7 @@ language plpgsql security definer set search_path = public as $$
 declare
   v_b      public.bookings%rowtype;
   v_branch bigint;
+  v_start  timestamptz;
   v_reader public.readers%rowtype;
 begin
   if not public.is_staff() then
@@ -398,9 +418,13 @@ begin
   if not found then
     return public.result(false, 'unknown_reader', 'Unknown reader.');
   end if;
-  select branch_id into v_branch from public.class_sessions where session_id = v_b.session_id;
+  select branch_id, start_time into v_branch, v_start from public.class_sessions where session_id = v_b.session_id;
   if v_reader.branch_id <> v_branch then
     return public.result(false, 'wrong_branch_reader', 'This reader belongs to a different branch.');
+  end if;
+  -- check-in opens 30 minutes before the class starts
+  if now() < v_start - interval '30 minutes' then
+    return public.result(false, 'checkin_too_early', 'Check-in opens 30 minutes before the class starts.');
   end if;
 
   insert into public.check_in_logs (booking_id, reader_id) values (p_booking_id, p_reader_id);

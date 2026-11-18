@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { useAuth, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import Modal from "@/components/Modal";
-import { dayKey, fmtDate, fmtDayLong, fmtDayShort, fmtTime } from "@/lib/format";
+import { dayKey, fmtDate, fmtDayLong, fmtDayShort, fmtTime, FREE_CANCEL_MS } from "@/lib/format";
 import type { Branch, SessionRow } from "@/lib/types";
 
 type Alt = { session: SessionRow; options: SessionRow[]; reason: string };
@@ -20,6 +20,7 @@ export default function SchedulePage() {
   const [busy, setBusy] = useState<number | null>(null);
   const [toast, setToast] = useState<ToastMsg>(null);
   const [alt, setAlt] = useState<Alt | null>(null);
+  const [confirmBook, setConfirmBook] = useState<SessionRow | null>(null);
   const [branch, setBranch] = useState("all");
   const [cls, setCls] = useState("all");
   const [day, setDay] = useState("all");
@@ -51,7 +52,19 @@ export default function SchedulePage() {
     return Array.from(m.entries());
   }, [shown]);
 
+  // Less than 3 hours before the start a booking can't be cancelled for free,
+  // so the member confirms first (protects against a misclick).
+  function requestBook(session: SessionRow) {
+    if (new Date(session.start_time).getTime() - Date.now() < FREE_CANCEL_MS) {
+      setAlt(null);
+      setConfirmBook(session);
+      return;
+    }
+    book(session);
+  }
+
   async function book(session: SessionRow) {
+    setConfirmBook(null);
     setBusy(session.session_id);
     const r = await api.book(session.session_id);
     const { s, bookedSet } = await load();
@@ -68,6 +81,8 @@ export default function SchedulePage() {
   }
 
   const blocked = me && me.effective_status !== "Active";
+  // staff accounts (Admin, Receptionist) run the gym; they don't book classes
+  const staff = me?.role === "Admin" || me?.role === "Receptionist";
 
   return (
     <>
@@ -83,6 +98,7 @@ export default function SchedulePage() {
         </div>
       )}
       {!me && !authLoading && <div className="notice"><Link href="/login">{t("notice_login_to_book")}</Link></div>}
+      {staff && <div className="notice">{t("staff_home_note")}</div>}
       {me?.role === "Trainer" && (
         <div className="notice good">{t("trainer_home_note")} <Link href="/trainer">{t("trainer_home_link")}</Link></div>
       )}
@@ -133,7 +149,7 @@ export default function SchedulePage() {
                       <Link className="btn" href="/login">{t("login_to_book_btn")}</Link>
                     ) : (
                       // a full class stays clickable: the system rejects it and offers alternatives (FR-01, FR-03)
-                      <button className={`btn ${full ? "ghost" : ""}`} disabled={!!blocked || busy === s.session_id} onClick={() => book(s)}>
+                      <button className={`btn ${full ? "ghost" : ""}`} disabled={!!blocked || staff || busy === s.session_id} onClick={() => requestBook(s)}>
                         {busy === s.session_id ? t("booking_in_progress") : full ? t("full") : t("book")}
                       </button>
                     )}
@@ -144,6 +160,16 @@ export default function SchedulePage() {
           </div>
         </section>
       ))}
+
+      {confirmBook && (
+        <Modal title={t("late_book_title")} onClose={() => setConfirmBook(null)} actions={<>
+          <button className="btn ghost" onClick={() => setConfirmBook(null)}>{t("late_book_no")}</button>
+          <button className="btn" onClick={() => book(confirmBook)}>{t("late_book_yes")}</button>
+        </>}>
+          <p>{t("late_book_body")}</p>
+          <p className="small muted">{confirmBook.class_name} · {fmtDayShort(confirmBook.start_time, lang)}, {fmtTime(confirmBook.start_time)}</p>
+        </Modal>
+      )}
 
       {alt && (
         <Modal title={alt.reason} onClose={() => setAlt(null)} actions={<button className="btn ghost" onClick={() => setAlt(null)}>{t("close")}</button>}>
@@ -160,7 +186,7 @@ export default function SchedulePage() {
                       <b>{fmtDayShort(o.start_time, lang)}, {fmtTime(o.start_time)}–{fmtTime(o.end_time)}</b>
                       <div className="small muted">{o.trainer_name} · {o.branch_name}, {o.room_name} · {t("spots_left", { left: o.capacity - o.spots_taken, cap: o.capacity })}</div>
                     </div>
-                    <button className="btn" disabled={busy === o.session_id} onClick={() => book(o)}>{t("book")}</button>
+                    <button className="btn" disabled={busy === o.session_id} onClick={() => requestBook(o)}>{t("book")}</button>
                   </li>
                 ))}
               </ul>

@@ -173,7 +173,7 @@ describe("Roles and admin rules (FR-09, FR-10)", () => {
   });
 
   it("TC-19 check-in: confirmed booking becomes Attended once; repeats and wrong branch reader are refused", async () => {
-    const s = (await api.listSessions()).find((x) => x.branch_id === 1)!; // Downtown; its reader is NFC-DT-01
+    const s = await adminCreateSession(10 * 60_000); // Downtown, starts in 10 min (check-in is open); its reader is NFC-DT-01
     await registerMember();
     await api.book(s.session_id);
     await api.logout();
@@ -194,7 +194,7 @@ describe("Roles and admin rules (FR-09, FR-10)", () => {
     expect(r).toMatchObject({ ok: true, code: "updated" });
   });
   it("TC-21 roles: Receptionist can use front-desk functions (bookings, readers, check-in) but not admin functions", async () => {
-    const s = (await api.listSessions()).find((x) => x.branch_id === 1)!;
+    const s = await adminCreateSession(10 * 60_000); // Downtown, starts in 10 min (check-in is open)
     await registerMember("+77011110001");
     await api.book(s.session_id);
     await api.logout();
@@ -215,5 +215,44 @@ describe("Roles and admin rules (FR-09, FR-10)", () => {
     expect(await api.adminInsert("branches", { branch_name: "X", address: "Y", phone_number: "+77270009999" })).toMatchObject({ ok: false, code: "forbidden" });
     expect(await api.adminList("members")).toEqual([]);
     expect(await api.attendanceReport()).toEqual([]);
+  });
+});
+
+describe("Fixes from the manual test table (cases 2-5)", () => {
+  it("TC-22 book: Admin and Receptionist accounts cannot book classes (staff_cannot_book)", async () => {
+    const s = await firstSession();
+    await loginAdmin();
+    expect(await api.book(s.session_id)).toMatchObject({ ok: false, code: "staff_cannot_book" });
+    expect((await api.listSessions()).find((x) => x.session_id === s.session_id)!.spots_taken).toBe(s.spots_taken);
+  });
+
+  it("TC-23 book: a class that overlaps another booked class is refused (time_conflict)", async () => {
+    const a = await adminCreateSession(5 * H);                                                    // 45 min, branch 1
+    const b = await adminCreateSession(5 * H + 15 * 60_000, { roomId: 3, branchId: 2, trainerId: 1 }); // starts during a
+    const c = await adminCreateSession(5 * H + 45 * 60_000, { roomId: 1, trainerId: 2 });          // starts exactly when a ends
+    await registerMember();
+    expect(await api.book(a.session_id)).toMatchObject({ ok: true, code: "booked" });
+    expect(await api.book(b.session_id)).toMatchObject({ ok: false, code: "time_conflict" });
+    expect(await api.book(c.session_id)).toMatchObject({ ok: true, code: "booked" }); // back-to-back is fine
+    // b overlaps both a and c: it can be booked only after both are cancelled
+    const mine = await api.myBookings((await api.getMe())!.member_id);
+    const idOf = (sessionId: number) => mine.find((x) => x.session_id === sessionId)!.booking_id;
+    expect(await api.cancel(idOf(a.session_id))).toMatchObject({ ok: true });
+    expect(await api.book(b.session_id)).toMatchObject({ ok: false, code: "time_conflict" });
+    expect(await api.cancel(idOf(c.session_id))).toMatchObject({ ok: true });
+    expect(await api.book(b.session_id)).toMatchObject({ ok: true, code: "booked" });
+  });
+
+  it("TC-24 check-in: more than 30 min before the start is refused, booking stays Confirmed (checkin_too_early)", async () => {
+    const s = await adminCreateSession(2 * H);
+    await registerMember();
+    await api.book(s.session_id);
+    const memberId = (await api.getMe())!.member_id;
+    await api.logout();
+    await loginAdmin();
+    const booking = (await api.allBookings()).find((x) => x.session_id === s.session_id)!;
+    expect(await api.checkIn(booking.booking_id, "NFC-DT-01")).toMatchObject({ ok: false, code: "checkin_too_early" });
+    expect((await api.allBookings()).find((x) => x.booking_id === booking.booking_id)!.booking_status).toBe("Confirmed");
+    expect(memberId).toBe(booking.member_id);
   });
 });

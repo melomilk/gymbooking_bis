@@ -4,7 +4,7 @@ import { api } from "@/lib/api";
 import { useRequireRole, useT } from "@/components/Providers";
 import CrudSection, { type CrudConfig, type Form } from "@/components/CrudSection";
 import Toast, { type ToastMsg } from "@/components/Toast";
-import { dayKey, fmtDate, fmtDayShort, fmtTime, toIso } from "@/lib/format";
+import { CHECKIN_OPENS_MS, dayKey, fmtDate, fmtDayShort, fmtTime, toIso } from "@/lib/format";
 import Modal from "@/components/Modal";
 import type { TrainerApplication } from "@/lib/types";
 import type { AttendanceRow, BookingRow, Branch, ClassType, Entity, MemberRow, Reader, Result, Room, Row, SessionRow, Trainer } from "@/lib/types";
@@ -267,7 +267,11 @@ export default function AdminPage() {
                   </div>
                   <div className="right">
                     <span className={`pill ${b.booking_status.toLowerCase()}`}>{t(`bs_${b.booking_status}`)}</span>
-                    <button className="btn" disabled={b.booking_status !== "Confirmed" || !readerId}
+                    {/* check-in opens 30 min before the start */}
+                    {b.booking_status === "Confirmed" && new Date(b.start_time).getTime() - now > CHECKIN_OPENS_MS && (
+                      <span className="small muted">{t("checkin_opens_note")}</span>
+                    )}
+                    <button className="btn" disabled={b.booking_status !== "Confirmed" || !readerId || new Date(b.start_time).getTime() - now > CHECKIN_OPENS_MS}
                       onClick={async () => onResult(await api.checkIn(b.booking_id, readerId))}>{t("tap")}</button>
                     {/* Plan B: NFC failed. Only after the class has started (Task 7: no "Attended" for a future class). */}
                     {b.booking_status !== "Attended" && new Date(b.start_time).getTime() <= now && (
