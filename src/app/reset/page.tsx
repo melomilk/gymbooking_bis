@@ -8,7 +8,7 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuth, useT } from "@/components/Providers";
 import { maskPhone } from "@/lib/format";
-import { MIN_PASSWORD, normalizePhone } from "@/lib/validate";
+import { formatPhone, MIN_PASSWORD, normalizePhone } from "@/lib/validate";
 
 const CODE_LEN = 6;
 const SEND_MS = 1500; // "sending the SMS…"
@@ -28,7 +28,7 @@ export default function ResetPasswordPage() {
   const codeInput = useRef<HTMLInputElement>(null);
 
   // the login page passes the number that was already typed
-  useEffect(() => { setPhone(new URLSearchParams(window.location.search).get("phone") ?? ""); }, []);
+  useEffect(() => { setPhone(formatPhone(new URLSearchParams(window.location.search).get("phone") ?? "")); }, []);
   useEffect(() => { if (phase === "code") codeInput.current?.focus(); }, [phase]);
 
   async function sendCode() {
@@ -71,7 +71,8 @@ export default function ResetPasswordPage() {
         <form className="form" noValidate onSubmit={(e) => { e.preventDefault(); sendCode(); }}>
           <p className="muted">{t("reset_intro")}</p>
           <label>{t("phone")}
-            <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="+7 701 123 4567" autoComplete="tel" />
+            <input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} onBlur={() => setPhone(formatPhone(phone))}
+              placeholder="+7 701 123 45 67" autoComplete="tel" />
           </label>
           {error && <div className="notice bad" role="alert">{error}</div>}
           <button className="btn big">{t("reset_send_btn")}</button>

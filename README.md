@@ -148,6 +148,7 @@ supabase/
   migration_booking_rules.sql  Staff can't book, no overlapping bookings, check-in opens 30 min before start
   migration_session_cancel.sql  Admin can cancel a class; a booked class can't be moved to another time or room
   migration_excuse_no_show.sql  Excuse a no-show for a valid reason (PDF medical note for illness), fee returned
+  migration_application_edit.sql  Applicant can correct a trainer application while it is still under review
 ```
 
 ---

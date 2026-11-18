@@ -10,6 +10,7 @@ import { FREE_CANCEL_MS, fmtDate, fmtDateTime, fmtDayShort, fmtTime } from "@/li
 import type { BookingRow, Result, TrainerApplication } from "@/lib/types";
 import { TrainerApplyForm } from "@/components/TrainerFields";
 import { attendanceRate, fmtRate } from "@/lib/stats";
+import { useSessionState } from "@/lib/useSessionState";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -147,7 +148,8 @@ function TrainerApplicationBlock({ app, isMember, error, onSent }: {
   app: TrainerApplication | null; isMember: boolean; error: string | null; onSent: (r: Result) => void;
 }) {
   const { t, lang } = useT();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useSessionState("trainer.formOpen", false); // still open after visiting other pages
+  const [editing, setEditing] = useState(false);
   const formOpen = open || !!error;
 
   // Approved but later demoted by an admin: nothing to offer here
@@ -162,6 +164,10 @@ function TrainerApplicationBlock({ app, isMember, error, onSent }: {
         <div className="app-head"><b>{t("app_title")}</b><span className="pill st-pending">{t("app_status_Pending")}</span></div>
         <p className="small">{t("app_pending_body", { date: fmtDateTime(app.created_at, lang) })}</p>
         <p className="small muted">{app.specialization} · {t("f_experience")}: {app.experience_years} · {t("app_files")}: {app.certificates.length}</p>
+        {/* still under review: the applicant can correct it and send it again */}
+        {editing
+          ? <TrainerApplyForm existing={app} onCancel={() => setEditing(false)} onDone={(r) => { setEditing(false); onSent(r); }} />
+          : <button className="link" onClick={() => setEditing(true)}>{t("app_edit")}</button>}
       </div>
     );
   }

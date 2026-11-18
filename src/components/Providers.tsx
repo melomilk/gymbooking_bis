@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 import { api } from "@/lib/api";
 import { hasKey, translate, type Key, type Lang } from "@/lib/i18n";
 import type { Me, Result, Role } from "@/lib/types";
+import { clearSessionState } from "@/lib/useSessionState";
 
 const LANG_KEY = "gym-lang";
 
@@ -64,7 +65,8 @@ export default function Providers({ children }: { children: React.ReactNode }) {
     return hasKey(k) ? translate(lang, k) : r.message || translate(lang, "code_error");
   }, [lang]);
 
-  const logout = useCallback(async () => { await api.logout(); setMe(null); }, []);
+  // the next person using this tab must not see the previous user's filters or drafts
+  const logout = useCallback(async () => { await api.logout(); clearSessionState(); setMe(null); }, []);
 
   return (
     <LangContext.Provider value={{ lang, setLang, t, tr }}>

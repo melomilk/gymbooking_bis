@@ -51,6 +51,21 @@ async function rpc(fn: string, args: Record<string, unknown>): Promise<Result> {
 
 const now = () => new Date().toISOString();
 
+/** Uploads certificates to the private bucket, folder = auth uid (checked by the storage policy and by the functions). */
+async function uploadCertificates(files: File[]): Promise<Result & { uploaded: CertificateFile[] }> {
+  const { data: u } = await sb().auth.getUser();
+  if (!u.user) return { ok: false, code: "not_signed_in", uploaded: [] };
+  const uploaded: CertificateFile[] = [];
+  for (const f of files) {
+    const ext = (f.name.split(".").pop() || "bin").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5);
+    const path = `${u.user.id}/${Date.now()}-${crypto.randomUUID()}.${ext}`;
+    const { error } = await sb().storage.from(CERT_BUCKET).upload(path, f, { contentType: f.type, upsert: false });
+    if (error) return { ok: false, code: "upload_failed", message: error.message, uploaded };
+    uploaded.push({ path, name: f.name.slice(0, 120) });
+  }
+  return { ok: true, code: "uploaded", uploaded };
+}
+
 /** /api/reset-password: runs on the server, where the service key can change a password. */
 async function resetCall(body: Record<string, unknown>): Promise<ResetRequest> {
   const res = await fetch("/api/reset-password", {
@@ -120,7 +135,7 @@ export const supabaseApi: Api = {
 
   async login(phone, password) {
     const p = normalizePhone(phone);
-    if (!p) return { ok: false, code: "bad_credentials" };
+    if (!p) return { ok: false, code: "invalid_phone" }; // not a phone number at all: say so
     const { error } = await sb().auth.signInWithPassword({ email: phoneToAuthEmail(p), password });
     return error ? { ok: false, code: "bad_credentials" } : { ok: true, code: "saved" };
   },
@@ -275,22 +290,23 @@ export const supabaseApi: Api = {
   async submitTrainerApplication(input, files) {
     const err = checkTrainerApplication(input, files, { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES });
     if (err) return { ok: false, code: err };
-    const { data: u } = await sb().auth.getUser();
-    if (!u.user) return { ok: false, code: "not_signed_in" };
-
-    // 1) files -> private bucket, folder = auth uid (checked by the storage policy and by the function)
-    const uploaded: CertificateFile[] = [];
-    for (const f of files) {
-      const ext = (f.name.split(".").pop() || "bin").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 5);
-      const path = `${u.user.id}/${Date.now()}-${crypto.randomUUID()}.${ext}`;
-      const { error } = await sb().storage.from(CERT_BUCKET).upload(path, f, { contentType: f.type, upsert: false });
-      if (error) return { ok: false, code: "upload_failed", message: error.message };
-      uploaded.push({ path, name: f.name.slice(0, 120) });
-    }
-    // 2) the application row
+    // 1) files -> private bucket, 2) the application row
+    const up = await uploadCertificates(files);
+    if (!up.ok) return up;
     return rpc("submit_trainer_application", {
       p_email: input.email.trim(), p_specialization: input.specialization.trim(),
-      p_experience_years: input.experience_years, p_bio: input.bio.trim(), p_certificates: uploaded,
+      p_experience_years: input.experience_years, p_bio: input.bio.trim(), p_certificates: up.uploaded,
+    });
+  },
+
+  async updateTrainerApplication(input, keep, files) {
+    const err = checkTrainerApplication(input, files, { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES }, keep.length);
+    if (err) return { ok: false, code: err };
+    const up = await uploadCertificates(files);
+    if (!up.ok) return up;
+    return rpc("update_trainer_application", {
+      p_email: input.email.trim(), p_specialization: input.specialization.trim(),
+      p_experience_years: input.experience_years, p_bio: input.bio.trim(), p_certificates: [...keep, ...up.uploaded],
     });
   },
 
@@ -311,7 +327,8 @@ export const supabaseApi: Api = {
   },
 
   async certificateUrl(path) {
-    const { data } = await sb().storage.from(CERT_BUCKET).createSignedUrl(path, 300);
+    // 1 hour: the admin page prepares the links when it opens (bug 18)
+    const { data } = await sb().storage.from(CERT_BUCKET).createSignedUrl(path, 3600);
     return data?.signedUrl ?? null;
   },
 

@@ -243,6 +243,12 @@ export interface Api {
    * `file_too_large`, `bad_file_type`, `upload_failed`, `invalid_email`, `required`, `invalid_value`.
    */
   submitTrainerApplication(i: TrainerApplicationInput, files: File[]): Promise<Result>;
+  /**
+   * Replaces the caller's PENDING application with a corrected version. `keep` are
+   * certificates already uploaded that stay; `files` are new ones to upload.
+   * Codes: `application_updated`, `application_not_pending`, plus the submit codes.
+   */
+  updateTrainerApplication(i: TrainerApplicationInput, keep: CertificateFile[], files: File[]): Promise<Result>;
   /** The caller's latest application, or `null`. */
   myTrainerApplication(): Promise<TrainerApplication | null>;
   /** All applications, pending first (admin only). */

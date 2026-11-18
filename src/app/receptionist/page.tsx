@@ -5,14 +5,16 @@ import { useRequireRole, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import { CHECKIN_OPENS_MS, fmtDayShort, fmtTime } from "@/lib/format";
 import type { BookingRow, Reader, Result } from "@/lib/types";
+import { useSessionState } from "@/lib/useSessionState";
 
 export default function ReceptionistPage() {
   const { allowed } = useRequireRole(["Receptionist", "Admin"]); // FR-10
   const { t, tr, lang } = useT();
   const [bookings, setBookings] = useState<BookingRow[] | null>(null);
   const [readers, setReaders] = useState<Reader[]>([]);
-  const [readerId, setReaderId] = useState("");
-  const [filter, setFilter] = useState("");
+  // remembered while the receptionist visits other pages (bug 19)
+  const [readerId, setReaderId] = useSessionState("reception.reader", "");
+  const [filter, setFilter] = useSessionState("reception.filter", "");
   const [toast, setToast] = useState<ToastMsg>(null);
 
   const load = useCallback(async () => {

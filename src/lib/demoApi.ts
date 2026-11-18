@@ -321,6 +321,7 @@ export const demoApi: Api = {
   async login(phone, password) {
     const st = await load();
     const p = normalizePhone(phone);
+    if (!p) return no("invalid_phone");
     const m = st.members.find((x) => x.phone_number === p);
     if (!m || (await hashPassword(password, m.pw_salt)).hash !== m.pw_hash) return no("bad_credentials");
     st.current = m.member_id;
@@ -686,6 +687,32 @@ export const demoApi: Api = {
     });
     save(st);
     return ok("application_sent");
+  },
+
+  async updateTrainerApplication(input, keep, files) {
+    const err = checkTrainerApplication(input, files, { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES }, keep.length);
+    if (err) return no(err);
+    const st = await load();
+    const m = me(st);
+    if (!m) return no("not_signed_in");
+    const app = (st.applications ?? []).find((a) => a.member_id === m.member_id && a.status === "Pending");
+    if (!app) return no("application_not_pending");
+    // only certificates that really belong to this application can be kept
+    if (keep.some((k) => !app.certificates.some((c) => c.path === k.path))) return no("invalid_value");
+    st.files ??= {};
+    const certs: CertificateFile[] = [...keep];
+    for (const f of files) {
+      const path = `demo/${m.member_id}/${Date.now()}-${certs.length}`;
+      if (f.size <= DEMO_FILE_LIMIT) st.files[path] = await readAsDataUrl(f);
+      certs.push({ path, name: f.name.slice(0, 120) });
+    }
+    for (const c of app.certificates) if (!certs.some((k) => k.path === c.path)) delete st.files[c.path]; // removed files
+    Object.assign(app, {
+      email: input.email.trim(), specialization: input.specialization.trim(), experience_years: input.experience_years,
+      bio: input.bio.trim(), certificates: certs, created_at: nowIso(),
+    });
+    save(st);
+    return ok("application_updated");
   },
 
   async myTrainerApplication() {

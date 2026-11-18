@@ -1,15 +1,23 @@
 "use client";
 // Extra fields a would-be trainer fills in. Used on the registration form and,
-// as a standalone form, on the profile page (re-apply after a rejection or a
-// failed upload).
+// as a standalone form, on the profile page (apply, re-apply after a rejection
+// or a failed upload, or edit an application that is still under review).
 import { useRef, useState } from "react";
 import { api } from "@/lib/api";
-import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, type Result, type TrainerApplicationInput } from "@/lib/types";
+import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, type CertificateFile, type Result, type TrainerApplication, type TrainerApplicationInput } from "@/lib/types";
 import { checkTrainerApplication } from "@/lib/validate";
+import { forgetSessionState, useSessionState } from "@/lib/useSessionState";
 import { useT } from "./Providers";
 
-export type TrainerForm = { email: string; specialization: string; experience: string; bio: string; files: File[]; consent: boolean };
-export const emptyTrainerForm = (): TrainerForm => ({ email: "", specialization: "", experience: "", bio: "", files: [], consent: false });
+/** `files` = new files picked now; `kept` = certificates uploaded earlier that stay (editing). */
+export type TrainerForm = { email: string; specialization: string; experience: string; bio: string; files: File[]; kept: CertificateFile[]; consent: boolean };
+export const emptyTrainerForm = (): TrainerForm => ({ email: "", specialization: "", experience: "", bio: "", files: [], kept: [], consent: false });
+
+/** A sent application, back in the form for editing. The consent box must be ticked again. */
+export const fromApplication = (a: TrainerApplication): TrainerForm => ({
+  email: a.email, specialization: a.specialization, experience: String(a.experience_years), bio: a.bio ?? "",
+  files: [], kept: a.certificates, consent: false,
+});
 
 /** Form -> API input. `experience` stays NaN when empty, so validation reports it. */
 export const toApplicationInput = (f: TrainerForm): TrainerApplicationInput => ({
@@ -25,7 +33,7 @@ function emptyRequired(f: TrainerForm): FieldKey[] {
   if (!f.email.trim()) out.push("email");
   if (!f.specialization.trim()) out.push("specialization");
   if (!f.experience.trim()) out.push("experience");
-  if (f.files.length === 0) out.push("files");
+  if (f.files.length + f.kept.length === 0) out.push("files");
   if (!f.consent) out.push("consent");
   return out;
 }
@@ -33,7 +41,7 @@ function emptyRequired(f: TrainerForm): FieldKey[] {
 /** Fields to outline in red: empty required ones plus ones with a wrong value. */
 export function trainerProblems(f: TrainerForm): Set<FieldKey> {
   const bad = new Set(emptyRequired(f));
-  const code = checkTrainerApplication(toApplicationInput(f), f.files, { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES });
+  const code = checkTrainerApplication(toApplicationInput(f), f.files, { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES }, f.kept.length);
   if (code === "invalid_email") bad.add("email");
   if (code === "invalid_value" && f.experience.trim()) bad.add("experience");
   if (code === "certificates_required" || code === "bad_file_type" || code === "file_too_large") bad.add("files");
@@ -43,7 +51,7 @@ export function trainerProblems(f: TrainerForm): Set<FieldKey> {
 /** Error code for the whole form: "required" if anything required is empty, else the first wrong value. */
 export function trainerFormError(f: TrainerForm): string | null {
   if (emptyRequired(f).length) return "required";
-  return checkTrainerApplication(toApplicationInput(f), f.files, { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES });
+  return checkTrainerApplication(toApplicationInput(f), f.files, { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES }, f.kept.length);
 }
 
 /** Moves the cursor to the first field outlined in red. */
@@ -84,7 +92,7 @@ export default function TrainerFields({ value, onChange, showErrors = false, dis
     // same file picked twice -> keep one
     const known = new Set(value.files.map((f) => `${f.name}|${f.size}`));
     const added = Array.from(list).filter((f) => !known.has(`${f.name}|${f.size}`));
-    onChange({ ...value, files: [...value.files, ...added].slice(0, CERT_MAX_FILES) });
+    onChange({ ...value, files: [...value.files, ...added].slice(0, CERT_MAX_FILES - value.kept.length) });
     if (fileInput.current) fileInput.current.value = "";
   }
 
@@ -101,11 +109,19 @@ export default function TrainerFields({ value, onChange, showErrors = false, dis
 
       <label><ReqLabel text={t("f_certificates")} />
         <input ref={fileInput} type="file" multiple accept={CERT_TYPES.join(",")}
-          disabled={value.files.length >= CERT_MAX_FILES} onChange={(e) => addFiles(e.target.files)} {...inv("files")} />
+          disabled={value.files.length + value.kept.length >= CERT_MAX_FILES} onChange={(e) => addFiles(e.target.files)} {...inv("files")} />
         <span className="small muted">{t("cert_hint")}</span>
       </label>
-      {value.files.length > 0 && (
+      {value.files.length + value.kept.length > 0 && (
         <ul className="file-list">
+          {value.kept.map((c) => (
+            <li key={c.path}>
+              <span>{c.name} <span className="muted small">· {t("cert_uploaded")}</span></span>
+              <button type="button" className="link" onClick={() => onChange({ ...value, kept: value.kept.filter((k) => k.path !== c.path) })}>
+                {t("cert_remove")}
+              </button>
+            </li>
+          ))}
           {value.files.map((f, i) => (
             <li key={`${f.name}-${f.size}`}>
               <span>{f.name} <span className="muted small">· {fmtSize(f.size)}</span></span>
@@ -126,10 +142,28 @@ export default function TrainerFields({ value, onChange, showErrors = false, dis
   );
 }
 
-/** Standalone application form (profile page). */
-export function TrainerApplyForm({ onDone }: { onDone: (r: Result) => void }) {
+const DRAFT_KEY = "trainer.applyDraft";
+type Draft = Omit<TrainerForm, "files" | "kept">;
+
+/**
+ * Standalone application form (profile page). With `existing` it edits that
+ * pending application; without it, it sends a new one and remembers the typed
+ * text while the user visits other pages (files can't be remembered by a browser).
+ */
+export function TrainerApplyForm({ onDone, existing, onCancel }: {
+  onDone: (r: Result) => void; existing?: TrainerApplication; onCancel?: () => void;
+}) {
   const { t, tr } = useT();
-  const [f, setF] = useState<TrainerForm>(emptyTrainerForm);
+  const start = existing ? fromApplication(existing) : emptyTrainerForm();
+  const [draft, setDraft] = useSessionState<Draft>(existing ? null : DRAFT_KEY,
+    { email: start.email, specialization: start.specialization, experience: start.experience, bio: start.bio, consent: start.consent });
+  const [files, setFiles] = useState<File[]>([]);
+  const [kept, setKept] = useState<CertificateFile[]>(start.kept);
+  const f: TrainerForm = { ...draft, files, kept };
+  const setF = (n: TrainerForm) => {
+    const { files: nf, kept: nk, ...rest } = n;
+    setDraft(rest); setFiles(nf); setKept(nk);
+  };
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
@@ -146,17 +180,24 @@ export function TrainerApplyForm({ onDone }: { onDone: (r: Result) => void }) {
       return;
     }
     setBusy(true); setError(null);
-    const r = await sendApplication(f);
+    const r = existing
+      ? await api.updateTrainerApplication(toApplicationInput(f), f.kept, f.files)
+      : await sendApplication(f);
     setBusy(false);
     if (!r.ok) return setError(tr(r));
+    if (!existing) forgetSessionState(DRAFT_KEY); // sent: start empty next time
     onDone(r);
   }
 
   return (
     <form ref={formRef} onSubmit={submit} className="form apply-form" noValidate>
+      {existing && <p className="small muted">{t("app_edit_note")}</p>}
       <TrainerFields value={f} onChange={setF} showErrors={showErrors} disabled={busy} />
       {error && <div className="notice bad" role="alert">{error}</div>}
-      <button className="btn" disabled={busy}>{busy ? t("please_wait") : t("send_application")}</button>
+      <div className="right">
+        {onCancel && <button type="button" className="btn ghost" disabled={busy} onClick={onCancel}>{t("discard")}</button>}
+        <button className="btn" disabled={busy}>{busy ? t("please_wait") : existing ? t("app_update_btn") : t("send_application")}</button>
+      </div>
     </form>
   );
 }
