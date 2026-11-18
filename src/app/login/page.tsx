@@ -1,12 +1,12 @@
 "use client";
-import { useState } from "react";
+import Link from "next/link";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { DEMO_ACCOUNTS } from "@/lib/demoApi";
-import { checkTrainerApplication, MIN_PASSWORD } from "@/lib/validate";
-import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES } from "@/lib/types";
+import { MIN_PASSWORD } from "@/lib/validate";
 import { useAuth, useT } from "@/components/Providers";
-import TrainerFields, { emptyTrainerForm, sendApplication, toApplicationInput, type TrainerForm } from "@/components/TrainerFields";
+import TrainerFields, { emptyTrainerForm, focusFirstInvalid, sendApplication, trainerFormError, type TrainerForm } from "@/components/TrainerFields";
 
 type AccountType = "Member" | "Trainer";
 
@@ -20,6 +20,9 @@ export default function LoginPage() {
   const [trainer, setTrainer] = useState<TrainerForm>(emptyTrainerForm);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showTrainerErrors, setShowTrainerErrors] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
+  const passwordRef = useRef<HTMLInputElement>(null);
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement>) => setF({ ...f, [k]: e.target.value });
 
   async function submit(e: React.SyntheticEvent) {
@@ -29,10 +32,12 @@ export default function LoginPage() {
 
     // Trainer: check the extra fields BEFORE the account is created
     if (asTrainer) {
-      if (!trainer.consent) return setError(tr({ code: "consent_required" }));
-      const bad = checkTrainerApplication(toApplicationInput(trainer), trainer.files,
-        { maxFiles: CERT_MAX_FILES, maxBytes: CERT_MAX_BYTES, types: CERT_TYPES });
-      if (bad) return setError(tr({ code: bad }));
+      const bad = trainerFormError(trainer);
+      if (bad) {
+        setShowTrainerErrors(true); // missing / wrong fields get a red outline
+        setTimeout(() => focusFirstInvalid(formRef.current), 0);
+        return setError(tr({ code: bad }));
+      }
     }
 
     setBusy(true);
@@ -41,6 +46,11 @@ export default function LoginPage() {
       : await api.register({ name: f.name, surname: f.surname, phone: f.phone, password: f.password, lang });
     if (!r.ok) {
       setBusy(false);
+      // wrong login: empty the password box so the user types it again from scratch
+      if (mode === "in") {
+        setF((cur) => ({ ...cur, password: "" }));
+        setTimeout(() => passwordRef.current?.focus(), 0);
+      }
       return setError(r.code === "rate_limited" ? t("code_rate_limited", { s: r.retry_after ?? 60 }) : tr(r));
     }
     // after registration: phone confirmation step, then the usual page
@@ -64,7 +74,7 @@ export default function LoginPage() {
   return (
     <div className="auth">
       <h1>{mode === "in" ? t("login_title") : t("register_title")}</h1>
-      <form onSubmit={submit} className="form" noValidate>
+      <form ref={formRef} onSubmit={submit} className="form" noValidate>
         {mode === "up" && (
           <div className="role-pick" role="radiogroup" aria-label={t("account_type")}>
             <span className="small muted">{t("account_type")}</span>
@@ -87,12 +97,15 @@ export default function LoginPage() {
         )}
         <label>{t("phone")}<input name="phone" type="tel" required value={f.phone} onChange={set("phone")} placeholder="+7 701 123 4567" autoComplete="tel" /></label>
         <label>{t("password")}
-          <input name="password" type="password" required minLength={MIN_PASSWORD} value={f.password} onChange={set("password")} autoComplete={mode === "in" ? "current-password" : "new-password"} />
+          <input ref={passwordRef} name="password" type="password" required minLength={MIN_PASSWORD} value={f.password} onChange={set("password")} autoComplete={mode === "in" ? "current-password" : "new-password"} />
           {mode === "up" && <span className="small muted">{t("password_hint")}</span>}
         </label>
+        {mode === "in" && (
+          <Link className="small forgot-link" href={`/reset${f.phone.trim() ? `?phone=${encodeURIComponent(f.phone.trim())}` : ""}`}>{t("forgot_link")}</Link>
+        )}
         {mode === "up" && accountType === "Trainer" && (
           <>
-            <TrainerFields value={trainer} onChange={setTrainer} />
+            <TrainerFields value={trainer} onChange={setTrainer} showErrors={showTrainerErrors} disabled={busy} />
             <div className="notice small">{t("trainer_register_note")}</div>
           </>
         )}

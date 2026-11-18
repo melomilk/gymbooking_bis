@@ -42,6 +42,14 @@ export const fmtDate = (ymd: string, l: Lang) => {
 /** Admin form date + time (Almaty, UTC+5) -> ISO timestamp */
 export const toIso = (date: string, time: string) => new Date(`${date}T${time}:00+05:00`).toISOString();
 
+/** +77015550101 -> +7 701 ***-**-01 (for "we sent a code to …") */
+export function maskPhone(p: string): string {
+  const d = p.replace(/\D/g, "");
+  if (d.length < 11) return p;
+  // non-breaking space and hyphens, so the number never wraps in the middle
+  return `+${d.slice(0, d.length - 10)}\u00a0${d.slice(-10, -7)}\u00a0***\u2011**\u2011${d.slice(-2)}`;
+}
+
 export const FREE_CANCEL_MS = 3 * 3600_000; // FR-06
 /** Check-in (NFC tap) opens this long before the class starts. */
 export const CHECKIN_OPENS_MS = 30 * 60_000;

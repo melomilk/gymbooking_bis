@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth, useT } from "@/components/Providers";
+import { maskPhone } from "@/lib/format";
 
 const CODE_LEN = 6;
 const SEND_MS = 2500;   // "sending the SMS…"
@@ -17,14 +18,6 @@ type Phase = "sending" | "enter" | "checking" | "done";
 /** Only internal paths, so ?next= can't send the user to another site. */
 function safeNext(raw: string | null): string {
   return raw && raw.startsWith("/") && !raw.startsWith("//") ? raw : "/";
-}
-
-/** +77015550101 -> +7 701 ***-**-01 */
-function maskPhone(p: string): string {
-  const d = p.replace(/\D/g, "");
-  if (d.length < 11) return p;
-  // non-breaking space and hyphens, so the number never wraps in the middle
-  return `+${d.slice(0, d.length - 10)}\u00a0${d.slice(-10, -7)}\u00a0***\u2011**\u2011${d.slice(-2)}`;
 }
 
 export default function VerifyPage() {
