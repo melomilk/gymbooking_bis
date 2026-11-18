@@ -319,3 +319,32 @@ describe("Fixes from the manual test table (cases 6-9)", () => {
     expect((await api.trainerRoster()).some((x) => x.session_id === s.session_id)).toBe(false);
   });
 });
+
+describe("Forgotten password (manual test table, case 12)", () => {
+  it("TC-29 reset: only the code that was sent works; the new password replaces the old one", async () => {
+    await registerMember("+77011112233", "secret123");
+    await api.logout();
+    const r = await api.requestPasswordReset("8 701 111 22 33"); // any phone format
+    expect(r).toMatchObject({ ok: true, code: "reset_code_sent" });
+    expect(r.sms_code).toMatch(/^\d{6}$/);
+    const wrong = r.sms_code === "000000" ? "111111" : "000000";
+    expect(await api.resetPassword({ phone: "+77011112233", token: r.token!, smsCode: wrong, password: "newpass1" }))
+      .toMatchObject({ ok: false, code: "reset_bad_code" });
+    expect(await api.resetPassword({ phone: "+77011112233", token: r.token!, smsCode: r.sms_code!, password: "123" }))
+      .toMatchObject({ ok: false, code: "weak_password" });
+    expect(await api.resetPassword({ phone: "+77011112233", token: r.token!, smsCode: r.sms_code!, password: "newpass1" }))
+      .toMatchObject({ ok: true, code: "reset_done" });
+    expect(await api.login("+77011112233", "secret123")).toMatchObject({ ok: false, code: "bad_credentials" });
+    expect(await api.login("+77011112233", "newpass1")).toMatchObject({ ok: true });
+    // a code works only once
+    expect(await api.resetPassword({ phone: "+77011112233", token: r.token!, smsCode: r.sms_code!, password: "again123" }))
+      .toMatchObject({ ok: false, code: "reset_bad_code" });
+  });
+
+  it("TC-30 reset: unknown phone and staff accounts are refused", async () => {
+    expect(await api.requestPasswordReset("+77019998877")).toMatchObject({ ok: false, code: "reset_unknown_phone" });
+    expect(await api.requestPasswordReset(ADMIN.phone)).toMatchObject({ ok: false, code: "reset_staff" });
+    expect(await api.requestPasswordReset("+77000000003")).toMatchObject({ ok: false, code: "reset_staff" }); // receptionist
+    expect(await api.requestPasswordReset("123")).toMatchObject({ ok: false, code: "invalid_phone" });
+  });
+});

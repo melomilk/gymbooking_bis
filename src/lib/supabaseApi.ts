@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import type { Api, AttendanceRow, BookingRow, CertificateFile, Entity, Result, Row, SessionRow, TrainerApplication } from "./types";
+import type { Api, AttendanceRow, BookingRow, CertificateFile, Entity, ResetRequest, Result, Row, SessionRow, TrainerApplication } from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID } from "./types";
 import { checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
 
@@ -49,6 +49,15 @@ async function rpc(fn: string, args: Record<string, unknown>): Promise<Result> {
 }
 
 const now = () => new Date().toISOString();
+
+/** /api/reset-password: runs on the server, where the service key can change a password. */
+async function resetCall(body: Record<string, unknown>): Promise<ResetRequest> {
+  const res = await fetch("/api/reset-password", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }).catch(() => null);
+  const data = res ? ((await res.json().catch(() => null)) as ResetRequest | null) : null;
+  return data ?? { ok: false, code: "error" };
+}
 
 /** Per-minute sign-up limit (migration_signup_rate_limit.sql). Without the migration: never limited. */
 async function signupRateLimited(): Promise<Result | null> {
@@ -202,6 +211,9 @@ export const supabaseApi: Api = {
   },
 
   cancelSession: (sessionId) => rpc("cancel_session", { p_session_id: sessionId }),
+
+  requestPasswordReset: (phone) => resetCall({ action: "send", phone }),
+  resetPassword: ({ phone, token, smsCode, password }) => resetCall({ action: "confirm", phone, token, sms_code: smsCode, password }),
 
   async allBookings() {
     await markNoShows();

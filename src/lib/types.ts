@@ -3,6 +3,12 @@ import type { Lang } from "./i18n";
 export type Role = "Member" | "Trainer" | "Receptionist" | "Admin";
 export type BookingStatus = "Confirmed" | "Cancelled" | "Attended" | "No-show";
 export type Result = { ok: boolean; code: string; message?: string; /** seconds, for `rate_limited` */ retry_after?: number };
+/**
+ * Answer to a password-reset request. IMITATION for the course project: no SMS is
+ * sent, so the 6-digit code comes back here and the page shows it as the "SMS".
+ * `token` proves which code was sent; it goes back with the code on confirm.
+ */
+export type ResetRequest = Result & { sms_code?: string; token?: string };
 
 export type Branch = { branch_id: number; branch_name: string; address: string; phone_number: string };
 export type Room = { room_id: number; branch_id: number; room_name: string; max_capacity: number };
@@ -178,6 +184,12 @@ export interface Api {
    * `class_started`, `session_not_found`, `forbidden`.
    */
   cancelSession(sessionId: number): Promise<Result>;
+
+  // ---------- forgotten password (imitation SMS) ----------
+  /** Codes: `reset_code_sent`, `invalid_phone`, `reset_unknown_phone`, `reset_staff`, `reset_unavailable`. */
+  requestPasswordReset(phone: string): Promise<ResetRequest>;
+  /** Codes: `reset_done`, `reset_bad_code`, `reset_expired`, `weak_password`, plus the request codes. */
+  resetPassword(i: { phone: string; token: string; smsCode: string; password: string }): Promise<Result>;
   /** Confirmed, attended and no-show bookings from the last 12 h onward, for check-in. */
   allBookings(): Promise<BookingRow[]>;
   listReaders(): Promise<Reader[]>;

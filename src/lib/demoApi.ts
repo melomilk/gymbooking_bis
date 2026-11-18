@@ -36,6 +36,9 @@ export const DEMO_ACCOUNTS = [
 
 // ---------- helpers ----------
 const ok = (code: string): Result => ({ ok: true, code });
+/** Password-reset codes "sent by SMS" (demo mode keeps them in memory only). */
+const resetCodes = new Map<string, { code: string; expires: number }>();
+const RESET_TTL_MS = 10 * 60_000;
 const no = (code: string): Result => ({ ok: false, code });
 const nowIso = () => new Date().toISOString();
 const todayYmd = () => new Date(Date.now() + TZ_OFFSET_H * 3600_000).toISOString().slice(0, 10);
@@ -312,6 +315,36 @@ export const demoApi: Api = {
     st.current = m.member_id;
     save(st);
     return ok("saved");
+  },
+
+  async requestPasswordReset(phone) {
+    const p = normalizePhone(phone);
+    if (!p) return no("invalid_phone");
+    const st = await load();
+    const m = st.members.find((x) => x.phone_number === p);
+    if (!m) return no("reset_unknown_phone");
+    if (m.role === "Admin" || m.role === "Receptionist") return no("reset_staff");
+    const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, "0");
+    resetCodes.set(p, { code, expires: Date.now() + RESET_TTL_MS });
+    return { ...ok("reset_code_sent"), sms_code: code, token: "demo" };
+  },
+
+  async resetPassword({ phone, smsCode, password }) {
+    const p = normalizePhone(phone);
+    if (!p) return no("invalid_phone");
+    const sent = resetCodes.get(p);
+    if (!sent) return no("reset_bad_code");
+    if (Date.now() > sent.expires) return no("reset_expired");
+    if (sent.code !== smsCode) return no("reset_bad_code");
+    if (password.length < MIN_PASSWORD) return no("weak_password");
+    const st = await load();
+    const m = st.members.find((x) => x.phone_number === p);
+    if (!m) return no("reset_unknown_phone");
+    const h = await hashPassword(password);
+    Object.assign(m, { pw_salt: h.salt, pw_hash: h.hash });
+    resetCodes.delete(p); // a code works once
+    save(st);
+    return ok("reset_done");
   },
 
   async logout() {
