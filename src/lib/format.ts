@@ -43,3 +43,5 @@ export const fmtDate = (ymd: string, l: Lang) => {
 export const toIso = (date: string, time: string) => new Date(`${date}T${time}:00+05:00`).toISOString();
 
 export const FREE_CANCEL_MS = 3 * 3600_000; // FR-06
+/** Check-in (NFC tap) opens this long before the class starts. */
+export const CHECKIN_OPENS_MS = 30 * 60_000;

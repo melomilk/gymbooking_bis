@@ -6,7 +6,7 @@ import type {
 } from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID } from "./types";
 import { checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
-import { FREE_CANCEL_MS } from "./format";
+import { CHECKIN_OPENS_MS, FREE_CANCEL_MS } from "./format";
 
 const KEY = "gym-demo-v2";
 const TZ_OFFSET_H = 5; // Asia/Almaty
@@ -368,6 +368,8 @@ export const demoApi: Api = {
     const st = await load();
     const m = me(st);
     if (!m) return no("not_signed_in");
+    // staff accounts are for running the gym, not for booking classes
+    if (m.role === "Admin" || m.role === "Receptionist") return no("staff_cannot_book");
     const s = st.sessions.find((x) => x.session_id === sessionId);
     if (!s) return no("session_not_found");
     if (new Date(s.start_time).getTime() <= Date.now()) return no("class_started");
@@ -375,6 +377,15 @@ export const demoApi: Api = {
     if (m.membership_expiry < almatyYmd(s.start_time)) return no("membership_expired");
     const old = st.bookings.find((b) => b.member_id === m.member_id && b.session_id === sessionId);
     if (old && old.booking_status !== "Cancelled") return no("already_booked");
+    // a member can't be in two classes at the same time
+    const clash = st.bookings.some((b) => {
+      if (b.member_id !== m.member_id || b.session_id === sessionId) return false;
+      if (b.booking_status !== "Confirmed" && b.booking_status !== "Attended") return false;
+      const o = st.sessions.find((x) => x.session_id === b.session_id)!;
+      const ms = (iso: string) => new Date(iso).getTime();
+      return ms(o.start_time) < ms(s.end_time) && ms(s.start_time) < ms(o.end_time);
+    });
+    if (clash) return no("time_conflict");
     if (taken(st, sessionId) >= s.capacity) return no("class_full");
     if (old) Object.assign(old, { booking_status: "Confirmed", booking_time: nowIso(), cancelled_at: null, fee_forfeited: false });
     else st.bookings.push({ booking_id: ++st.seq.bookings, member_id: m.member_id, session_id: sessionId, booking_status: "Confirmed",
@@ -490,6 +501,7 @@ export const demoApi: Api = {
     if (!r) return no("unknown_reader");
     const s = st.sessions.find((x) => x.session_id === b.session_id)!;
     if (r.branch_id !== s.branch_id) return no("wrong_branch_reader");
+    if (new Date(s.start_time).getTime() - Date.now() > CHECKIN_OPENS_MS) return no("checkin_too_early");
     // both steps saved together (one transaction)
     st.checkIns.push({ check_in_id: ++st.seq.checkIns, booking_id: b.booking_id, reader_id: readerId, check_in_time: nowIso() });
     b.booking_status = "Attended";
