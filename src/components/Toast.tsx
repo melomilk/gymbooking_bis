@@ -6,7 +6,8 @@ export type ToastMsg = { ok: boolean; text: string } | null;
 export default function Toast({ msg, onDone }: { msg: ToastMsg; onDone: () => void }) {
   useEffect(() => {
     if (!msg) return;
-    const t = setTimeout(onDone, 4500);
+    // success messages ("Booking confirmed!") stay 3 s; errors a bit longer so they can be read
+    const t = setTimeout(onDone, msg.ok ? 3000 : 4500);
     return () => clearTimeout(t);
   }, [msg, onDone]);
   if (!msg) return null;

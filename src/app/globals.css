@@ -81,7 +81,7 @@ code { background: var(--panel2); padding: .1rem .35rem; border-radius: 4px; }
 .tabs button.active { color: var(--text); border-color: var(--brand); }
 .toolbar { display: flex; align-items: center; gap: 1rem; margin-bottom: .8rem; flex-wrap: wrap; }
 .check { display: flex; align-items: center; gap: .4rem; font-size: .9rem; color: var(--muted); }
-.editor { background: var(--panel); border: 1px solid var(--brand); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; }
+.editor { background: var(--panel); border: 1px solid var(--brand); border-radius: 12px; padding: 1rem; margin-bottom: 1rem; scroll-margin-top: 5rem; /* stays below the sticky header */ }
 .editor-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: .8rem; }
 .editor-grid label { display: flex; flex-direction: column; gap: .3rem; font-size: .82rem; color: var(--muted); }
 .editor-grid .wide { grid-column: 1 / -1; }

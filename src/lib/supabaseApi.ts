@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import type { Api, AttendanceRow, BookingRow, CertificateFile, Entity, Result, Row, TrainerApplication } from "./types";
+import type { Api, AttendanceRow, BookingRow, CertificateFile, Entity, Result, Row, SessionRow, TrainerApplication } from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID } from "./types";
 import { checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
 
@@ -16,7 +16,8 @@ function sb(): SupabaseClient {
 /** Postgres / PostgREST error -> translatable code */
 export function dbErrorCode(e: { code?: string; message?: string } | null): string {
   const m = e?.message ?? "";
-  for (const c of ["capacity_exceeds_room", "capacity_below_bookings", "cannot_demote_self", "cannot_change_login"]) {
+  for (const c of ["capacity_exceeds_room", "capacity_below_bookings", "cannot_demote_self", "cannot_change_login",
+    "session_has_bookings", "session_is_cancelled"]) {
     if (m.includes(c)) return c;
   }
   switch (e?.code) {
@@ -131,7 +132,9 @@ export const supabaseApi: Api = {
     let q = sb().from("v_sessions").select("*").order("start_time");
     if (!opts?.includePast) q = q.gt("start_time", now());
     const { data } = await q;
-    return data ?? [];
+    const rows = (data ?? []) as SessionRow[];
+    // filtered here, not in the query, so the schedule still works before migration_session_cancel.sql is run
+    return opts?.includeCancelled ? rows : rows.filter((s) => !s.cancelled_at);
   },
 
   async searchTrainers(q) {
@@ -197,6 +200,8 @@ export const supabaseApi: Api = {
     if (error) return fail(error);
     return data && data.length ? { ok: true, code: "deleted" } : { ok: false, code: "forbidden" };
   },
+
+  cancelSession: (sessionId) => rpc("cancel_session", { p_session_id: sessionId }),
 
   async allBookings() {
     await markNoShows();
