@@ -72,6 +72,24 @@ implement every method below.
 | `certificateUrl(path)` | `string \| null` | Signed link valid for 5 minutes (owner or admin). |
 | `reviewTrainerApplication(id, approve, reason?)` | `Result` | Admin only. Codes: `application_approved`, `application_rejected`, `application_not_pending`, `application_not_found`, `already_trainer`. |
 
+### Pulse points, rewards, waitlist, reviews
+Full signatures and result codes: the `Api` interface in `src/lib/types.ts`.
+Without the migrations these methods return empty data (`[]`, `{}`, `null`), so the rest of the site keeps working.
+
+| Method | Returns | Notes |
+|---|---|---|
+| `myPoints()` | `PointsSummary \| null` | balance, lifetime, month_points, streak, streak_bonuses |
+| `myPointsHistory()` | `PointsEntry[]` | newest first, 30 rows |
+| `leaderboard()` | `Leaderboard \| null` | top 10 of the month + own place |
+| `listRewards()` / `redeemReward(id)` | `Reward[]` / `Result` | `redeemed` + `redemption_code`, `not_enough_points`, `out_of_stock`, `pass_already_active` |
+| `myRedemptions()` / `cancelRedemption(id)` | `Redemption[]` / `Result` | refund of points and stock |
+| `staffRedemptions()` / `useRedemption(id)` | `Redemption[]` / `Result` | front desk; `redemption_used`, `redemption_auto` |
+| `waitlistCounts()` / `myWaitlist()` | map / `WaitlistEntry[]` | |
+| `joinWaitlist(id)` / `leaveWaitlist(id)` | `Result` | `waitlist_joined` + `position`, `has_free_places`, `waitlist_closed`, `waitlist_limit` |
+| `trainerRatings()` / `myReviews()` / `listReviews()` | lists | `listReviews`: trainer (no names) or admin |
+| `submitReview(booking, rating, comment)` | `Result` | `review_saved_points`, `review_saved`, `review_not_attended`, `review_too_late` |
+| `deleteReview(id)` | `Result` | admin only |
+
 ### Admin (FR-09)
 
 `entity` is one of `"branches" | "rooms" | "trainers" | "classes" | "class_sessions" | "members"`.

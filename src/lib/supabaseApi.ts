@@ -1,5 +1,8 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import type { Api, AttendanceRow, BookingRow, CertificateFile, Entity, ResetRequest, Result, Row, SessionRow, TrainerApplication } from "./types";
+import type {
+  Api, AttendanceRow, BookingRow, CertificateFile, Entity, Leaderboard, MyReview, PointsEntry, PointsSummary, Redemption,
+  ResetRequest, Result, Review, Reward, Row, SessionRow, TrainerApplication, TrainerRating, WaitlistEntry,
+} from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES } from "./types";
 import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
 
@@ -334,4 +337,88 @@ export const supabaseApi: Api = {
 
   reviewTrainerApplication: (id, approve, reason) =>
     rpc("review_trainer_application", { p_application_id: id, p_approve: approve, p_reason: reason ?? null }),
+
+  // ---------- Pulse points and rewards (migration_points_rewards.sql) ----------
+  // A missing migration shows up as an error here; the pages then just show nothing.
+  async myPoints() {
+    const { data, error } = await sb().rpc("my_points");
+    return error || !data ? null : (data as PointsSummary);
+  },
+
+  async myPointsHistory() {
+    const { data } = await sb().from("v_my_points_history").select("*")
+      .order("created_at", { ascending: false }).order("entry_id", { ascending: false }).limit(30);
+    return (data ?? []) as PointsEntry[];
+  },
+
+  async leaderboard() {
+    const { data, error } = await sb().rpc("points_leaderboard", { p_limit: 10 });
+    return error || !data ? null : (data as Leaderboard);
+  },
+
+  async listRewards() {
+    const { data } = await sb().from("rewards").select("*").eq("active", true).order("cost");
+    return (data ?? []) as Reward[];
+  },
+
+  redeemReward: (rewardId) => rpc("redeem_reward", { p_reward_id: rewardId }),
+
+  async myRedemptions() {
+    const me = await supabaseApi.getMe();
+    if (!me) return [];
+    const { data } = await sb().from("v_redemptions").select("*").eq("member_id", me.member_id)
+      .order("created_at", { ascending: false });
+    return (data ?? []) as Redemption[];
+  },
+
+  cancelRedemption: (redemptionId) => rpc("cancel_redemption", { p_redemption_id: redemptionId }),
+
+  async staffRedemptions() {
+    const { data } = await sb().from("v_redemptions").select("*").order("created_at", { ascending: false }).limit(200);
+    const rows = (data ?? []) as Redemption[];
+    return rows.sort((a, b) => Number(b.status === "Active") - Number(a.status === "Active"));
+  },
+
+  useRedemption: (redemptionId) => rpc("use_redemption", { p_redemption_id: redemptionId }),
+
+  // ---------- waitlist (migration_waitlist.sql) ----------
+  async waitlistCounts() {
+    const { data } = await sb().from("v_waitlist_counts").select("*");
+    const out: Record<number, number> = {};
+    for (const r of (data ?? []) as { session_id: number; waiting: number }[]) out[r.session_id] = r.waiting;
+    return out;
+  },
+
+  async myWaitlist() {
+    const { data: s } = await sb().auth.getSession();
+    if (!s.session) return [];
+    const { data } = await sb().from("v_my_waitlist").select("*").order("start_time", { ascending: false }).limit(50);
+    return (data ?? []) as WaitlistEntry[];
+  },
+
+  joinWaitlist: (sessionId) => rpc("join_waitlist", { p_session_id: sessionId }),
+  leaveWaitlist: (sessionId) => rpc("leave_waitlist", { p_session_id: sessionId }),
+
+  // ---------- reviews (migration_reviews.sql) ----------
+  async trainerRatings() {
+    const { data } = await sb().from("v_trainer_ratings").select("*");
+    return (data ?? []) as TrainerRating[];
+  },
+
+  async myReviews() {
+    const { data: s } = await sb().auth.getSession();
+    if (!s.session) return [];
+    const { data } = await sb().from("v_my_reviews").select("*");
+    return (data ?? []) as MyReview[];
+  },
+
+  submitReview: (bookingId, rating, comment) =>
+    rpc("submit_review", { p_booking_id: bookingId, p_rating: rating, p_comment: comment }),
+
+  async listReviews() {
+    const { data } = await sb().from("v_reviews").select("*").order("created_at", { ascending: false }).limit(200);
+    return (data ?? []) as Review[];
+  },
+
+  deleteReview: (reviewId) => rpc("delete_review", { p_review_id: reviewId }),
 };

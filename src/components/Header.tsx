@@ -25,6 +25,7 @@ export default function Header() {
         <nav>
           {link("/", t("nav_classes"))}
           {me && link("/profile", t("nav_profile"))}
+          {(me?.role === "Member" || me?.role === "Trainer") && link("/rewards", t("nav_rewards"))}
           {me?.role === "Trainer" && link("/trainer", t("nav_trainer"))}
           {me?.role === "Receptionist" && link("/receptionist", t("nav_receptionist"))}
           {me?.role === "Admin" && link("/admin", t("nav_admin"))}

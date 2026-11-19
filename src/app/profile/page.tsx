@@ -7,7 +7,10 @@ import { useAuth, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import Modal from "@/components/Modal";
 import { FREE_CANCEL_MS, fmtDate, fmtDateTime, fmtDayShort, fmtTime } from "@/lib/format";
-import type { BookingRow, Result, TrainerApplication } from "@/lib/types";
+import { REVIEW_WINDOW_DAYS, type BookingRow, type MyReview, type PointsSummary, type Redemption, type Result, type TrainerApplication, type WaitlistEntry } from "@/lib/types";
+import type { Key } from "@/lib/i18n";
+import { ReviewModal } from "@/components/Rewards";
+import { levelFor } from "@/lib/rewards";
 import { TrainerApplyForm } from "@/components/TrainerFields";
 import { attendanceRate, fmtRate } from "@/lib/stats";
 import { useSessionState } from "@/lib/useSessionState";
@@ -22,14 +25,32 @@ export default function ProfilePage() {
   const [confirmLate, setConfirmLate] = useState<BookingRow | null>(null);
   const [app, setApp] = useState<TrainerApplication | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
+  // Pulse points, waitlist, reviews (each is empty if its migration is not applied yet)
+  const [points, setPoints] = useState<PointsSummary | null>(null);
+  const [queue, setQueue] = useState<WaitlistEntry[]>([]);
+  const [reviews, setReviews] = useState<MyReview[]>([]);
+  const [passes, setPasses] = useState<Redemption[]>([]);
+  const [reviewing, setReviewing] = useState<BookingRow | null>(null);
 
   const load = useCallback(async () => {
     if (!me) return;
-    const [bookings, application] = await Promise.all([api.myBookings(me.member_id), api.myTrainerApplication()]);
+    const [bookings, application, pts, wl, rv, red] = await Promise.all([
+      api.myBookings(me.member_id), api.myTrainerApplication(), api.myPoints(), api.myWaitlist(), api.myReviews(), api.myRedemptions(),
+    ]);
     setList(bookings);
     setApp(application);
+    setPoints(pts);
+    setQueue(wl);
+    setReviews(rv);
+    setPasses(red.filter((r) => r.kind === "late_cancel_pass" && r.status === "Active"));
     setLoading(false);
   }, [me]);
+
+  async function leaveQueue(e: WaitlistEntry) {
+    const r = await api.leaveWaitlist(e.session_id);
+    setToast({ ok: r.ok, text: tr(r) });
+    load();
+  }
 
   // registration as trainer created the account but the application failed
   useEffect(() => {
@@ -57,7 +78,14 @@ export default function ProfilePage() {
     const r = await api.cancel(b.booking_id, acceptFee);
     if (r.code === "late_cancel_needs_confirm") { setConfirmLate(b); return; }
     setConfirmLate(null);
-    setToast({ ok: r.ok, text: tr(r) });
+    let text = tr(r);
+    // A late-cancel pass is used by the database itself; the function still answers
+    // "fee forfeited", so check the booking to tell the member what really happened.
+    if (r.code === "cancelled_fee_forfeited" && passes.length > 0 && me) {
+      const after = (await api.myBookings(me.member_id)).find((x) => x.booking_id === b.booking_id);
+      if (after && !after.fee_forfeited) text = t("cancelled_pass_used");
+    }
+    setToast({ ok: r.ok, text });
     load();
   }
 
@@ -72,6 +100,13 @@ export default function ProfilePage() {
   const attended = list.filter((b) => b.booking_status === "Attended").length;
   const missed = list.filter((b) => b.booking_status === "No-show").length;
   const rate = attendanceRate(attended, missed);
+
+  // an attended class can be rated from its end for 14 days
+  const reviewable = (b: BookingRow) => b.booking_status === "Attended" && new Date(b.end_time).getTime() <= now
+    && now - new Date(b.end_time).getTime() <= REVIEW_WINDOW_DAYS * 86400_000;
+  const queueShown = queue.filter((e) => e.status === "Waiting"
+    || (e.status !== "Left" && new Date(e.start_time).getTime() > now - 86400_000));
+  const lv = points ? levelFor(points.lifetime) : null;
 
   const row = (b: BookingRow, canCancel: boolean) => {
     const freeUntil = new Date(new Date(b.start_time).getTime() - FREE_CANCEL_MS);
@@ -94,6 +129,12 @@ export default function ProfilePage() {
           </span>
           {b.excuse_reason && <span className="small muted">{t("excused_label", { reason: t(`er_${b.excuse_reason}`) })}</span>}
           {canCancel && <button className="btn ghost" onClick={() => cancel(b)}>{t("cancel_booking")}</button>}
+          {reviewable(b) && (() => {
+            const mine = reviews.find((r) => r.booking_id === b.booking_id);
+            return mine
+              ? <button className="btn ghost sm" title={t("review_edit_title")} onClick={() => setReviewing(b)}>{"★".repeat(mine.rating)} · {t("review_change")}</button>
+              : <button className="btn sm" onClick={() => setReviewing(b)}>{t("review_rate")}</button>;
+          })()}
         </div>
       </li>
     );
@@ -111,6 +152,38 @@ export default function ProfilePage() {
       </dl>
 
       <TrainerApplicationBlock app={app} isMember={me.role === "Member"} error={appError} onSent={applicationSent} />
+
+      {points && lv && (me.role === "Member" || me.role === "Trainer") && (
+        <Link href="/rewards" className="points-card" id="points-card">
+          <span><span className="small muted">{t("nav_rewards")}</span> <b className="points-mid">{points.balance}</b> {t("pts")}</span>
+          <span className="small">{t(`level_${lv.level.id}` as Key)} · 🔥 {t("streak_weeks", { n: points.streak })}</span>
+          <span className="small link-like">{t("rewards_open")} →</span>
+        </Link>
+      )}
+
+      {queueShown.length > 0 && (
+        <>
+          <h2>{t("my_waitlist")}</h2>
+          <ul className="list" id="waitlist">
+            {queueShown.map((e) => (
+              <li key={e.entry_id} className={`row-item ${e.status === "Promoted" && e.promoted_auto ? "promoted" : ""}`} data-waitlist={e.entry_id}>
+                <div>
+                  <b>{e.class_name}</b> <span className="muted">· {t("with_trainer", { name: e.trainer_name })}</span>
+                  <div className="small muted">{fmtDayShort(e.start_time, lang)} · {fmtTime(e.start_time)}–{fmtTime(e.end_time)} · {e.branch_name}, {e.room_name}</div>
+                  {e.status === "Promoted" && e.promoted_auto && <div className="small good-text">{t("wl_promoted_note")}</div>}
+                  {e.status === "Expired" && e.status_reason && <div className="small muted">{t(`wl_reason_${e.status_reason}` as Key)}</div>}
+                </div>
+                <div className="right">
+                  <span className={`pill wl-${e.status.toLowerCase()}`}>
+                    {e.status === "Waiting" ? t("wl_position", { n: e.position ?? 0 }) : t(`wl_${e.status}` as Key)}
+                  </span>
+                  {e.status === "Waiting" && <button className="btn ghost" onClick={() => leaveQueue(e)}>{t("wl_leave")}</button>}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
 
       {attended + missed > 0 && (
         <>
@@ -134,9 +207,14 @@ export default function ProfilePage() {
           <button className="btn ghost" onClick={() => setConfirmLate(null)}>{t("keep_booking")}</button>
           <button className="btn danger" onClick={() => cancel(confirmLate, true)}>{t("late_cancel_yes")}</button>
         </>}>
-          <p>{t("late_cancel_body")}</p>
+          <p>{passes.length > 0 ? t("late_cancel_body_pass") : t("late_cancel_body")}</p>
           <p className="small muted">{confirmLate.class_name} · {fmtDayShort(confirmLate.start_time, lang)}, {fmtTime(confirmLate.start_time)}</p>
         </Modal>
+      )}
+      {reviewing && (
+        <ReviewModal booking={reviewing} existing={reviews.find((r) => r.booking_id === reviewing.booking_id)}
+          onClose={() => setReviewing(null)}
+          onSaved={(r) => { setReviewing(null); setToast({ ok: r.ok, text: tr(r) }); load(); }} />
       )}
       <Toast msg={toast} onDone={() => setToast(null)} />
     </>
