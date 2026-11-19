@@ -89,6 +89,10 @@ Without the migrations these methods return empty data (`[]`, `{}`, `null`), so 
 | `trainerRatings()` / `myReviews()` / `listReviews()` | lists | `listReviews`: trainer (no names) or admin |
 | `submitReview(booking, rating, comment)` | `Result` | `review_saved_points`, `review_saved`, `review_not_attended`, `review_too_late` |
 | `deleteReview(id)` | `Result` | admin only |
+| `requestOptions()` | `{classes, rooms}` | class types and rooms for the trainer's form |
+| `listSessionRequests()` | `SessionRequest[]` | trainer: own; admin: all, pending first |
+| `submitSessionRequest(i)` | `Result` | `request_sent`, `request_too_soon`, `room_overlap`, `trainer_overlap`, `request_overlap`, `capacity_exceeds_room` |
+| `withdrawSessionRequest(id)` / `reviewSessionRequest(id, approve, reason?)` | `Result` | `request_approved` creates the class; `request_expired` if the time has passed |
 
 ### Admin (FR-09)
 

@@ -201,3 +201,10 @@ input.invalid, textarea.invalid, select.invalid { border-color: var(--bad); box-
   .points-hero { grid-template-columns: 1fr; gap: .9rem; }
   .streak-box { text-align: left; }
 }
+
+/* ---------- trainer class requests ---------- */
+#session-requests { margin: .5rem 0 1.5rem; }
+.sr-form { margin-top: .8rem; }
+.sr-day { background: var(--panel2); border-radius: 8px; padding: .5rem .7rem; margin-top: .8rem; }
+.sr-day .sublist { margin-top: .3rem; }
+.sr-list { margin-top: .9rem; }

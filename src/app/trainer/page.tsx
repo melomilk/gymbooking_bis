@@ -5,12 +5,15 @@ import { useAuth, useRequireRole, useT } from "@/components/Providers";
 import { fmtDayShort, fmtTime } from "@/lib/format";
 import type { Review, RosterRow } from "@/lib/types";
 import { ReviewsList, Stars } from "@/components/Rewards";
+import { TrainerSessionRequests } from "@/components/SessionRequests";
+import Toast, { type ToastMsg } from "@/components/Toast";
 
 export default function TrainerPage() {
   const { allowed } = useRequireRole(["Trainer"]);
   const { me } = useAuth();
-  const { t, lang } = useT();
+  const { t, tr, lang } = useT();
   const [rows, setRows] = useState<RosterRow[] | null>(null);
+  const [toast, setToast] = useState<ToastMsg>(null);
   const [reviews, setReviews] = useState<Review[]>([]);
 
   useEffect(() => {
@@ -25,6 +28,8 @@ export default function TrainerPage() {
   return (
     <>
       <h1>{t("trainer_title")}</h1>
+      <TrainerSessionRequests trainerId={me.trainer_id} onResult={(r) => setToast({ ok: r.ok, text: tr(r) })} />
+      <h2>{t("trainer_upcoming")}</h2>
       {sessions.length === 0 && <p className="muted">{t("no_upcoming_sessions")}</p>}
       <ul className="list">
         {sessions.map((s) => {
@@ -50,6 +55,7 @@ export default function TrainerPage() {
       )}
       <p className="small muted">{t("trainer_reviews_note")}</p>
       <ReviewsList rows={reviews} />
+      <Toast msg={toast} onDone={() => setToast(null)} />
     </>
   );
 }
