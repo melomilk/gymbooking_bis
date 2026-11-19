@@ -6,7 +6,8 @@ import { useAuth, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import Modal from "@/components/Modal";
 import { dayKey, fmtDate, fmtDayLong, fmtDayShort, fmtTime, FREE_CANCEL_MS } from "@/lib/format";
-import type { Branch, SessionRow } from "@/lib/types";
+import { WAITLIST_CLOSES_MS, type Branch, type SessionRow, type TrainerRating, type WaitlistEntry } from "@/lib/types";
+import { Stars } from "@/components/Rewards";
 import { useSessionState } from "@/lib/useSessionState";
 
 type Alt = { session: SessionRow; options: SessionRow[]; reason: string };
@@ -27,6 +28,11 @@ export default function SchedulePage() {
   const [clsSel, setCls] = useSessionState("classes.class", "all");
   const [daySel, setDay] = useSessionState("classes.day", "all");
   const [appPending, setAppPending] = useState(false);
+  // trainer ratings, queue lengths, own queue entries (empty without the migrations)
+  const [ratings, setRatings] = useState<Map<number, TrainerRating>>(new Map());
+  const [queueCounts, setQueueCounts] = useState<Record<number, number>>({});
+  const [myQueue, setMyQueue] = useState<Map<number, WaitlistEntry>>(new Map());
+  const [leaving, setLeaving] = useState<SessionRow | null>(null);
 
   useEffect(() => {
     if (me?.role !== "Member") { setAppPending(false); return; }
@@ -34,13 +40,36 @@ export default function SchedulePage() {
   }, [me]);
 
   const load = useCallback(async () => {
-    const [s, b, mine] = await Promise.all([
+    const [s, b, mine, rt, qc, mq] = await Promise.all([
       api.listSessions(), api.listBranches(), me ? api.myBookings(me.member_id) : Promise.resolve([]),
+      api.trainerRatings().catch(() => []), api.waitlistCounts().catch(() => ({})), me ? api.myWaitlist().catch(() => []) : Promise.resolve([]),
     ]);
     const bookedSet = new Set(mine.filter((x) => x.booking_status !== "Cancelled").map((x) => x.session_id));
     setSessions(s); setBranches(b); setBooked(bookedSet); setLoading(false);
+    setRatings(new Map(rt.map((r) => [r.trainer_id, r])));
+    setQueueCounts(qc);
+    setMyQueue(new Map(mq.filter((e) => e.status === "Waiting").map((e) => [e.session_id, e])));
     return { s, bookedSet };
   }, [me]);
+
+  // Waitlist: a full class; if a place frees up, the first in the queue is booked automatically
+  async function joinQueue(session: SessionRow) {
+    setBusy(session.session_id);
+    const r = await api.joinWaitlist(session.session_id);
+    setBusy(null);
+    setAlt(null);
+    setToast({ ok: r.ok, text: r.ok ? t("wl_joined", { n: r.position ?? 1 }) : tr(r) });
+    load();
+  }
+
+  async function leaveQueue(session: SessionRow) {
+    setLeaving(null);
+    const r = await api.leaveWaitlist(session.session_id);
+    setToast({ ok: r.ok, text: tr(r) });
+    load();
+  }
+
+  const queueOpen = (s: SessionRow) => new Date(s.start_time).getTime() - Date.now() >= WAITLIST_CLOSES_MS;
 
   useEffect(() => { if (!authLoading) load(); }, [authLoading, load]);
 
@@ -79,7 +108,8 @@ export default function SchedulePage() {
     if (r.code === "class_full" || r.code === "already_booked") {
       const options = s.filter((x) => x.class_id === session.class_id && x.session_id !== session.session_id
         && x.capacity - x.spots_taken > 0 && !bookedSet.has(x.session_id)).slice(0, 3);
-      setAlt({ session, options, reason: tr(r) });
+      // fresh numbers for the waitlist offer in the dialog
+      setAlt({ session: s.find((x) => x.session_id === session.session_id) ?? session, options, reason: tr(r) });
       return;
     }
     setAlt(null);
@@ -142,21 +172,27 @@ export default function SchedulePage() {
                     <span className="time">{fmtTime(s.start_time)}–{fmtTime(s.end_time)}</span>
                   </div>
                   <p className="muted small">{s.description}</p>
-                  <p className="small">{t("with_trainer", { name: s.trainer_name })}</p>
+                  <p className="small">
+                    {t("with_trainer", { name: s.trainer_name })}
+                    {ratings.get(s.trainer_id) && <> · <Stars value={ratings.get(s.trainer_id)!.avg_rating} count={ratings.get(s.trainer_id)!.reviews_count} /></>}
+                  </p>
                   <p className="small muted">{s.branch_name} · {s.room_name} · {t("minutes", { n: s.duration_min })}</p>
                   <div className="bar"><div style={{ width: `${Math.min(100, (s.spots_taken / s.capacity) * 100)}%` }} className={full ? "full" : ""} /></div>
                   <div className="card-bottom">
                     <span className={`small ${full ? "bad-text" : left <= 3 ? "warn-text" : "muted"}`}>
                       {full ? t("full") : t("spots_left", { left, cap: s.capacity })}
+                      {full && queueCounts[s.session_id] ? <span className="muted"> · {t("wl_count", { n: queueCounts[s.session_id] })}</span> : null}
                     </span>
                     {mine ? (
                       <button className="btn done" disabled>{t("booked_mark")}</button>
                     ) : !me ? (
                       <Link className="btn" href="/login">{t("login_to_book_btn")}</Link>
+                    ) : myQueue.has(s.session_id) ? (
+                      <button className="btn ghost waiting" onClick={() => setLeaving(s)}>{t("wl_position", { n: myQueue.get(s.session_id)!.position ?? 0 })}</button>
                     ) : (
                       // a full class stays clickable: the system rejects it and offers alternatives (FR-01, FR-03)
                       <button className={`btn ${full ? "ghost" : ""}`} disabled={!!blocked || staff || busy === s.session_id} onClick={() => requestBook(s)}>
-                        {busy === s.session_id ? t("booking_in_progress") : full ? t("full") : t("book")}
+                        {busy === s.session_id ? t("booking_in_progress") : full ? (queueOpen(s) ? t("full_queue") : t("full")) : t("book")}
                       </button>
                     )}
                   </div>
@@ -179,6 +215,15 @@ export default function SchedulePage() {
 
       {alt && (
         <Modal title={alt.reason} onClose={() => setAlt(null)} actions={<button className="btn ghost" onClick={() => setAlt(null)}>{t("close")}</button>}>
+          {me && !staff && !blocked && queueOpen(alt.session) && !booked.has(alt.session.session_id) && alt.session.capacity - alt.session.spots_taken <= 0 && (
+            <div className="notice wl-offer">
+              <b>{t("wl_offer_title")}</b>
+              <p className="small">{t("wl_offer_body")}</p>
+              <button className="btn" disabled={busy === alt.session.session_id} onClick={() => joinQueue(alt.session)}>
+                {t("wl_join")}{queueCounts[alt.session.session_id] ? ` · ${t("wl_count", { n: queueCounts[alt.session.session_id] })}` : ""}
+              </button>
+            </div>
+          )}
           <p className="muted"><b>{t("alt_title", { class: alt.session.class_name })}</b></p>
           {alt.options.length === 0 ? (
             <p className="muted">{t("alt_none", { class: alt.session.class_name })}</p>
@@ -198,6 +243,15 @@ export default function SchedulePage() {
               </ul>
             </>
           )}
+        </Modal>
+      )}
+      {leaving && (
+        <Modal title={t("wl_leave_title")} onClose={() => setLeaving(null)} actions={<>
+          <button className="btn ghost" onClick={() => setLeaving(null)}>{t("wl_stay")}</button>
+          <button className="btn danger" onClick={() => leaveQueue(leaving)}>{t("wl_leave")}</button>
+        </>}>
+          <p>{t("wl_leave_body", { n: myQueue.get(leaving.session_id)?.position ?? 0 })}</p>
+          <p className="small muted">{leaving.class_name} · {fmtDayShort(leaving.start_time, lang)}, {fmtTime(leaving.start_time)}</p>
         </Modal>
       )}
       <Toast msg={toast} onDone={() => setToast(null)} />

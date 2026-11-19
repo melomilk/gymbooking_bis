@@ -140,3 +140,64 @@ input.invalid, textarea.invalid, select.invalid { border-color: var(--bad); box-
 .check-mark { width: 44px; height: 44px; border-radius: 50%; background: var(--good); color: #fff; display: grid;
   place-items: center; font-size: 1.4rem; font-weight: 700; }
 .code-input { font-size: 1.6rem; letter-spacing: .5em; text-align: center; font-variant-numeric: tabular-nums; padding: .6rem; }
+
+/* ---------- Pulse points, rewards, waitlist, reviews ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.stars { color: #f5a524; white-space: nowrap; }
+.stars-off { color: var(--line); }
+.star-input { display: flex; align-items: center; gap: .15rem; margin: .6rem 0; }
+.star-input label { position: relative; font-size: 2rem; line-height: 1; cursor: pointer; color: var(--line); padding: 0 .1rem; }
+.star-input label.on { color: #f5a524; }
+.star-input input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.star-input label:has(input:focus-visible) { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 4px; }
+.star-input .small { margin-left: .5rem; }
+
+.points-hero { display: grid; grid-template-columns: auto 1fr auto; gap: 1.5rem; align-items: center; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1.3rem; margin: 1rem 0; }
+.points-big { font-size: 2.6rem; font-weight: 800; line-height: 1.05; color: var(--brand); font-variant-numeric: tabular-nums; }
+.level-box { display: flex; flex-direction: column; gap: .35rem; min-width: 0; }
+.level-bar { height: 8px; background: var(--panel2); border-radius: 99px; overflow: hidden; }
+.level-bar div { height: 100%; background: var(--brand); border-radius: 99px; }
+.streak-box { text-align: center; }
+.streak-num { font-size: 1.6rem; font-weight: 800; }
+.rules { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: .6rem .9rem; margin-bottom: .5rem; }
+.rules summary { cursor: pointer; font-weight: 600; }
+.rules ul { margin: .5rem 0 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: .25rem; }
+
+.reward .cost { font-weight: 800; color: var(--brand); white-space: nowrap; }
+.reward .pill { align-self: flex-start; }
+.reward .card-bottom { margin-top: auto; padding-top: .5rem; }
+.code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .04em; }
+.big-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 2rem; font-weight: 800; letter-spacing: .12em;
+  text-align: center; background: var(--panel2); border: 2px dashed var(--brand); border-radius: 12px; padding: .8rem; margin: .5rem 0; }
+.pill.rs-active { color: var(--warn); } .pill.rs-used { color: var(--good); } .pill.rs-cancelled { color: var(--muted); }
+
+.badges { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: .6rem; }
+.badge { display: flex; flex-direction: column; align-items: center; gap: .2rem; text-align: center; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px; padding: .8rem .5rem; opacity: .55; filter: grayscale(1); }
+.badge.earned { opacity: 1; filter: none; border-color: var(--brand); }
+.badge-icon { font-size: 1.8rem; line-height: 1.2; }
+
+.leaderboard { list-style: none; padding: 0; margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.leaderboard li { display: grid; grid-template-columns: 2.5rem 1fr auto; align-items: center; gap: .5rem; padding: .55rem .9rem; border-bottom: 1px solid var(--line); }
+.leaderboard li:last-child { border-bottom: 0; }
+.leaderboard li.me { background: var(--panel2); font-weight: 600; }
+.leaderboard .place { text-align: center; font-weight: 700; }
+.history-points .row-item { padding: .55rem .9rem; }
+
+.points-card { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--brand); border-radius: 10px; padding: .7rem 1rem; margin: .8rem 0; }
+.points-card:hover { border-color: var(--brand); }
+.points-mid { font-size: 1.3rem; color: var(--brand); }
+.link-like { color: var(--brand); font-weight: 600; }
+
+.btn.waiting { border-color: var(--warn); color: var(--warn); }
+.wl-offer { display: flex; flex-direction: column; align-items: flex-start; gap: .3rem; }
+.wl-offer p { margin: 0; }
+.row-item.promoted { border-color: var(--good); }
+.pill.wl-waiting { color: var(--warn); } .pill.wl-promoted { color: var(--good); } .pill.wl-expired, .pill.wl-left { color: var(--muted); }
+
+@media (max-width: 640px) {
+  .points-hero { grid-template-columns: 1fr; gap: .9rem; }
+  .streak-box { text-align: left; }
+}

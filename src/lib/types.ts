@@ -2,7 +2,12 @@ import type { Lang } from "./i18n";
 
 export type Role = "Member" | "Trainer" | "Receptionist" | "Admin";
 export type BookingStatus = "Confirmed" | "Cancelled" | "Attended" | "No-show";
-export type Result = { ok: boolean; code: string; message?: string; /** seconds, for `rate_limited` */ retry_after?: number };
+export type Result = {
+  ok: boolean; code: string; message?: string;
+  /** seconds, for `rate_limited` */ retry_after?: number;
+  /** code to show at the front desk, for `redeemed` */ redemption_code?: string;
+  /** place in the queue, for `waitlist_joined` */ position?: number;
+};
 /**
  * Answer to a password-reset request. IMITATION for the course project: no SMS is
  * sent, so the 6-digit code comes back here and the page shows it as the "SMS".
@@ -121,10 +126,57 @@ export const CERT_MAX_BYTES = 5 * 1024 * 1024;
 export const CERT_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 
 // Tables the admin panel can edit (FR-09)
-export type Entity = "branches" | "rooms" | "trainers" | "classes" | "class_sessions" | "members";
+export type Entity = "branches" | "rooms" | "trainers" | "classes" | "class_sessions" | "members" | "rewards";
 export const ENTITY_ID: Record<Entity, string> = {
   branches: "branch_id", rooms: "room_id", trainers: "trainer_id",
-  classes: "class_id", class_sessions: "session_id", members: "member_id",
+  classes: "class_id", class_sessions: "session_id", members: "member_id", rewards: "reward_id",
+};
+
+// ---------- Pulse points and rewards (migration_points_rewards.sql) ----------
+/** Points rules. The database trigger uses the same numbers. */
+export const POINTS = { attended: 10, no_show: -5, review: 5, streak_bonus: 20, streak_every: 4 } as const;
+export type RewardKind = "free_class" | "late_cancel_pass" | "membership_days" | "merch";
+export const REWARD_KINDS: RewardKind[] = ["free_class", "late_cancel_pass", "membership_days", "merch"];
+export type Reward = {
+  reward_id: number; reward_name: string; description: string | null; kind: RewardKind;
+  cost: number; stock: number | null; extend_days: number | null; active: boolean;
+};
+export type RedemptionStatus = "Active" | "Used" | "Cancelled";
+export type Redemption = {
+  redemption_id: number; member_id: number; member_fullname: string; phone_number: string;
+  reward_id: number; reward_name: string; kind: RewardKind; extend_days: number | null; cost: number;
+  code: string; status: RedemptionStatus; created_at: string; used_at: string | null; cancelled_at: string | null;
+};
+export type PointsSummary = { balance: number; lifetime: number; month_points: number; streak: number; streak_bonuses: number };
+export type PointsReason = "attended" | "no_show" | "no_show_reversed" | "streak_bonus" | "review" | "review_removed" | "redeem" | "redeem_refund";
+export type PointsEntry = {
+  entry_id: number; delta: number; reason: PointsReason; created_at: string;
+  class_name: string | null; start_time: string | null; reward_name: string | null;
+};
+export type LeaderboardRow = { place: number; name: string; points: number; is_me: boolean };
+export type Leaderboard = { top: LeaderboardRow[]; me: { place: number; points: number } | null };
+
+// ---------- waitlist (migration_waitlist.sql) ----------
+/** The queue closes this long before the start (same as the free-cancellation window). */
+export const WAITLIST_CLOSES_MS = 3 * 3600_000;
+export const WAITLIST_MAX = 5;
+export type WaitlistStatus = "Waiting" | "Promoted" | "Left" | "Expired";
+export type WaitlistEntry = {
+  entry_id: number; session_id: number; booking_id: number | null; status: WaitlistStatus;
+  promoted_auto: boolean; status_reason: "membership" | "time_conflict" | "session_cancelled" | null;
+  position: number | null; created_at: string; updated_at: string;
+  class_name: string; trainer_name: string; branch_name: string; room_name: string; start_time: string; end_time: string;
+};
+
+// ---------- reviews (migration_reviews.sql) ----------
+export const REVIEW_WINDOW_DAYS = 14;
+export const REVIEW_MAX_CHARS = 500;
+export type TrainerRating = { trainer_id: number; trainer_name: string; avg_rating: number; reviews_count: number };
+export type MyReview = { review_id: number; booking_id: number; rating: number; comment: string | null; created_at: string; updated_at: string };
+/** A review as the trainer (no name) or the admin (with name) sees it. */
+export type Review = {
+  review_id: number; rating: number; comment: string | null; created_at: string; updated_at: string;
+  trainer_id: number; trainer_name: string; class_name: string; start_time: string; member_fullname: string | null;
 };
 export type Row = Record<string, unknown>;
 
@@ -261,4 +313,56 @@ export interface Api {
    * `application_not_found`, `already_trainer`, `admin_only`.
    */
   reviewTrainerApplication(id: number, approve: boolean, reason?: string): Promise<Result>;
+
+  // ---------- Pulse points and rewards ----------
+  // Without the migration these return empty data / null, so the site keeps working.
+  /** Balance, lifetime points (for the level), this month, streak in weeks. `null` if unavailable. */
+  myPoints(): Promise<PointsSummary | null>;
+  /** Own points history, newest first. */
+  myPointsHistory(): Promise<PointsEntry[]>;
+  /** Top 10 of this month + the caller's place. */
+  leaderboard(): Promise<Leaderboard | null>;
+  /** Active rewards, cheapest first. */
+  listRewards(): Promise<Reward[]>;
+  /**
+   * Exchanges points for a reward. Codes: `redeemed` (+ `redemption_code`), `not_enough_points`,
+   * `out_of_stock`, `reward_unavailable`, `pass_already_active`, `staff_cannot_redeem`.
+   */
+  redeemReward(rewardId: number): Promise<Result>;
+  myRedemptions(): Promise<Redemption[]>;
+  /** Cancel an unused reward: points (and stock) come back. Codes: `redemption_cancelled`, `redemption_not_active`. */
+  cancelRedemption(redemptionId: number): Promise<Result>;
+  /** Front desk: all redemptions, active first (staff only). */
+  staffRedemptions(): Promise<Redemption[]>;
+  /** Front desk hands out a free visit / merch. Codes: `redemption_used`, `redemption_not_active`, `redemption_auto`, `staff_only`. */
+  useRedemption(redemptionId: number): Promise<Result>;
+
+  // ---------- waitlist ----------
+  /** Queue length per upcoming class: session_id -> people waiting. */
+  waitlistCounts(): Promise<Record<number, number>>;
+  /** Own queue entries (waiting, booked from the queue, expired), newest class first. */
+  myWaitlist(): Promise<WaitlistEntry[]>;
+  /**
+   * Join the queue of a full class. Codes: `waitlist_joined` (+ `position`), `has_free_places`,
+   * `already_waiting`, `already_booked`, `waitlist_closed`, `waitlist_limit`, `time_conflict`,
+   * `membership_expired`, `membership_suspended`, `session_cancelled`, `staff_cannot_book`.
+   */
+  joinWaitlist(sessionId: number): Promise<Result>;
+  /** Codes: `waitlist_left`, `not_waiting`. */
+  leaveWaitlist(sessionId: number): Promise<Result>;
+
+  // ---------- reviews ----------
+  /** Average rating per trainer (public). */
+  trainerRatings(): Promise<TrainerRating[]>;
+  myReviews(): Promise<MyReview[]>;
+  /**
+   * Rate an attended class (1-5 stars, optional comment) within 14 days after it ends; can be edited.
+   * Codes: `review_saved_points` (first time, +5 points), `review_saved`, `review_not_attended`,
+   * `review_too_early`, `review_too_late`, `invalid_rating`.
+   */
+  submitReview(bookingId: number, rating: number, comment: string): Promise<Result>;
+  /** Trainer: reviews of own classes without names. Admin: all reviews with names. */
+  listReviews(): Promise<Review[]>;
+  /** Admin removes a review; its points are taken back. Codes: `review_deleted`, `review_not_found`, `admin_only`. */
+  deleteReview(reviewId: number): Promise<Result>;
 }

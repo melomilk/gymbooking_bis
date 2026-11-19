@@ -22,6 +22,12 @@ Members register with a phone number, browse the schedule and book a place. The 
 - Search trainers, branches and own bookings
 - Interface in Kazakh, English and Russian. The choice is saved on the account.
 
+**What makes PulseGym different**
+- **Pulse points** only for real visits (NFC check-in or front desk), never for just booking: +10 per class, +20 for every 4 weeks in a row, +5 for a review, −5 for a no-show (given back if excused). Levels, 8 badges and a monthly leaderboard (first name + initial only).
+- **Rewards for points**: a free visit, a late-cancel pass (used automatically), extra membership days (applied at once) and gym merch. Each exchange gets a code like `PG-7K3Q2A`; the front desk hands out the prize. The admin edits the catalog.
+- **Waitlist**: join the queue of a full class; when a place frees up, the first person is booked automatically. The queue closes 3 hours before the start, so nobody is booked into a class they can't cancel for free.
+- **Verified reviews**: only members who attended (status Attended) can rate a class, 1–5 stars, within 14 days. Trainers see reviews without names; the schedule shows each trainer's rating.
+
 **Trainers**
 - See their own upcoming classes with attendee names. They can't see other trainers' classes or members' contact details.
 
@@ -149,6 +155,9 @@ supabase/
   migration_session_cancel.sql  Admin can cancel a class; a booked class can't be moved to another time or room
   migration_excuse_no_show.sql  Excuse a no-show for a valid reason (PDF medical note for illness), fee returned
   migration_application_edit.sql  Applicant can correct a trainer application while it is still under review
+  migration_points_rewards.sql  Pulse points, rewards catalog, redemptions, late-cancel pass
+  migration_waitlist.sql  Waitlist with automatic booking when a place frees up
+  migration_reviews.sql   Reviews of attended classes, trainer ratings (after points_rewards)
 ```
 
 ---
@@ -170,7 +179,8 @@ Without environment variables, the app runs in **demo mode**: data is kept in th
 
 1. Create a Supabase project. In the **SQL Editor**, run `supabase/schema.sql`, then `supabase/seed.sql`,
    then `supabase/migration_trainer_signup.sql`, `supabase/migration_signup_rate_limit.sql`
-   and `supabase/migration_excuse_no_show.sql`.
+   and `supabase/migration_excuse_no_show.sql`, then `supabase/migration_points_rewards.sql`,
+   `supabase/migration_waitlist.sql` and `supabase/migration_reviews.sql` (in this order).
 2. Create `.env.local` (see `.env.example`):
 
    ```

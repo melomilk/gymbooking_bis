@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useRequireRole, useT } from "@/components/Providers";
+import { AdminReviews, AdminRewards, StaffRedemptions } from "@/components/Rewards";
 import CrudSection, { type CrudConfig, type Form } from "@/components/CrudSection";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import { CHECKIN_OPENS_MS, dayKey, fmtDate, fmtDayShort, fmtTime, toIso } from "@/lib/format";
@@ -13,12 +14,14 @@ import type { Key } from "@/lib/i18n";
 import { attendanceRate, fmtRate, LOW_ATTENDANCE } from "@/lib/stats";
 import { useSessionState } from "@/lib/useSessionState";
 
-type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "applications" | "checkin" | "noshows" | "report";
+type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "applications" | "checkin" | "noshows" | "report"
+  | "rewards" | "redemptions" | "reviews";
 const TABS: { id: Tab; label: Key }[] = [
   { id: "sessions", label: "tab_sessions" }, { id: "classes", label: "tab_classes" }, { id: "trainers", label: "tab_trainers" },
   { id: "branches", label: "tab_branches" }, { id: "rooms", label: "tab_rooms" }, { id: "members", label: "tab_members" },
   { id: "applications", label: "tab_applications" },
   { id: "checkin", label: "tab_checkin" }, { id: "noshows", label: "tab_noshows" }, { id: "report", label: "tab_report" },
+  { id: "rewards", label: "tab_rewards" }, { id: "redemptions", label: "tab_redemptions" }, { id: "reviews", label: "tab_reviews" },
 ];
 
 type Data = {
@@ -253,7 +256,13 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {tab === "report" ? (
+      {tab === "rewards" ? (
+        <AdminRewards onResult={onResult} />
+      ) : tab === "redemptions" ? (
+        <StaffRedemptions onResult={onResult} />
+      ) : tab === "reviews" ? (
+        <AdminReviews onResult={onResult} />
+      ) : tab === "report" ? (
         <AttendanceReport rows={data.report} />
       ) : tab === "noshows" ? (
         <NoShows rows={data.noShows} onResult={onResult} />

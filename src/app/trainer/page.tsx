@@ -3,15 +3,21 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth, useRequireRole, useT } from "@/components/Providers";
 import { fmtDayShort, fmtTime } from "@/lib/format";
-import type { RosterRow } from "@/lib/types";
+import type { Review, RosterRow } from "@/lib/types";
+import { ReviewsList, Stars } from "@/components/Rewards";
 
 export default function TrainerPage() {
   const { allowed } = useRequireRole(["Trainer"]);
   const { me } = useAuth();
   const { t, lang } = useT();
   const [rows, setRows] = useState<RosterRow[] | null>(null);
+  const [reviews, setReviews] = useState<Review[]>([]);
 
-  useEffect(() => { if (allowed) api.trainerRoster().then(setRows); }, [allowed]);
+  useEffect(() => {
+    if (!allowed) return;
+    api.trainerRoster().then(setRows);
+    api.listReviews().then(setReviews).catch(() => {});
+  }, [allowed]);
   if (!allowed || !rows) return <p className="muted">{t("loading")}</p>;
   if (!me?.trainer_id) return <div className="notice bad">{t("not_linked")}</div>;
 
@@ -37,6 +43,13 @@ export default function TrainerPage() {
           );
         })}
       </ul>
+
+      <h2>{t("my_reviews_title")}</h2>
+      {reviews.length > 0 && (
+        <p><Stars value={reviews.reduce((a, r) => a + r.rating, 0) / reviews.length} count={reviews.length} /></p>
+      )}
+      <p className="small muted">{t("trainer_reviews_note")}</p>
+      <ReviewsList rows={reviews} />
     </>
   );
 }

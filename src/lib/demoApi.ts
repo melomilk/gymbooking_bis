@@ -3,12 +3,15 @@
 // Passwords are stored as salted PBKDF2 hashes even here (NFR-03).
 import type {
   Api, AttendanceRow, CertificateFile, TrainerApplication, Branch, BookingRow, ClassType, Entity, Me, MemberRow, Reader, Result, Room, RosterRow, Row, SessionRow, Trainer,
+  Leaderboard, MyReview, PointsEntry, PointsSummary, Redemption, Review, Reward, TrainerRating, WaitlistEntry,
 } from "./types";
-import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES } from "./types";
+import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES,
+  POINTS, REVIEW_MAX_CHARS, REVIEW_WINDOW_DAYS, REWARD_KINDS, WAITLIST_CLOSES_MS, WAITLIST_MAX } from "./types";
+import { almatyWeekStart, streakWeeks } from "./rewards";
 import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
 import { CHECKIN_OPENS_MS, FREE_CANCEL_MS } from "./format";
 
-const KEY = "gym-demo-v2";
+const KEY = "gym-demo-v3"; // v3: points, rewards, waitlist, reviews + a demo member with visit history
 const TZ_OFFSET_H = 5; // Asia/Almaty
 
 type DMember = MemberRow & { pw_salt: string; pw_hash: string };
@@ -25,15 +28,47 @@ type Store = {
   applications?: DApplication[];
   /** certificate / excuse note path -> data URL (small files only; localStorage is ~5 MB) */
   files?: Record<string, string>;
-};
+} & Extra;
 type DApplication = Omit<TrainerApplication, "member_fullname" | "phone_number">;
+// Pulse points, rewards, waitlist, reviews (same rules as the three migrations)
+type DRedemption = { redemption_id: number; member_id: number; reward_id: number; cost: number; code: string;
+  status: Redemption["status"]; created_at: string; used_at: string | null; cancelled_at: string | null; used_booking_id?: number | null };
+type DWait = { entry_id: number; session_id: number; member_id: number; status: WaitlistEntry["status"]; promoted_auto: boolean;
+  status_reason: WaitlistEntry["status_reason"]; booking_id: number | null; created_at: string; updated_at: string };
+type DReview = { review_id: number; booking_id: number; member_id: number; session_id: number; trainer_id: number;
+  rating: number; comment: string | null; created_at: string; updated_at: string };
+type Extra = {
+  rewards: Reward[]; redemptions: DRedemption[]; waitlist: DWait[]; reviews: DReview[];
+  /** booking_id -> when the +5 for a review was given / taken back (points once per class) */
+  reviewPoints: Record<number, { given: string; removed?: string }>;
+};
 const DEMO_FILE_LIMIT = 700 * 1024;
 
 export const DEMO_ACCOUNTS = [
   { role: "Admin", phone: "+7 700 000 0001", password: "admin123" },
   { role: "Trainer", phone: "+7 700 000 0002", password: "trainer123" },
   { role: "Receptionist", phone: "+7 700 000 0003", password: "reception123" },
+  { role: "Member", phone: "+7 700 000 0004", password: "member123" },
 ] as const;
+
+/** Starter catalog: the same as migration_points_rewards.sql. */
+const STARTER_REWARDS: Omit<Reward, "reward_id">[] = [
+  { reward_name: "Late-cancel pass", description: "Your next late cancellation is free of charge.", kind: "late_cancel_pass", cost: 60, stock: null, extend_days: null, active: true },
+  { reward_name: "Free single visit", description: "One extra class or a guest visit for a friend.", kind: "free_class", cost: 150, stock: null, extend_days: null, active: true },
+  { reward_name: "PulseGym water bottle", description: "Branded 0.7 l bottle. Pick it up at the front desk.", kind: "merch", cost: 250, stock: 30, extend_days: null, active: true },
+  { reward_name: "+7 days of membership", description: "Your membership is extended by 7 days right away.", kind: "membership_days", cost: 300, stock: null, extend_days: 7, active: true },
+  { reward_name: "PulseGym towel", description: "Branded sports towel. Pick it up at the front desk.", kind: "merch", cost: 350, stock: 20, extend_days: null, active: true },
+  { reward_name: "PulseGym T-shirt", description: "Branded training T-shirt. Pick it up at the front desk.", kind: "merch", cost: 500, stock: 15, extend_days: null, active: true },
+];
+
+/** Stores saved by an older version lack the new lists. */
+function normalize(st: Store): Store {
+  st.rewards ??= STARTER_REWARDS.map((r, i) => ({ ...r, reward_id: i + 1 }));
+  st.redemptions ??= []; st.waitlist ??= []; st.reviews ??= []; st.reviewPoints ??= {};
+  st.seq.rewards ??= st.rewards.reduce((m, r) => Math.max(m, r.reward_id), 0);
+  for (const k of ["redemptions", "waitlist", "reviews"]) st.seq[k] ??= 0;
+  return st;
+}
 
 // ---------- helpers ----------
 const ok = (code: string): Result => ({ ok: true, code });
@@ -58,7 +93,7 @@ async function hashPassword(password: string, saltHex?: string) {
 
 // ---------- seed ----------
 async function seed(): Promise<Store> {
-  const st: Store = {
+  const st = {
     branches: [
       { branch_id: 1, branch_name: "Downtown", address: "12 Abay Ave, Almaty", phone_number: "+77270000001" },
       { branch_id: 2, branch_name: "Riverside", address: "85 Dostyk Ave, Almaty", phone_number: "+77270000002" },
@@ -81,13 +116,15 @@ async function seed(): Promise<Store> {
       { class_id: 5, class_name: "Zumba", description: "Dance-based cardio workout.", duration_min: 60 },
     ],
     members: [], sessions: [], bookings: [], checkIns: [],
+    // rewards & co. are filled by normalize() below (it fills only missing lists)
     readers: [
       { reader_id: "NFC-DT-01", branch_id: 1, check_in_method: "NFC" },
       { reader_id: "NFC-RS-01", branch_id: 2, check_in_method: "NFC" },
     ],
     current: null,
     seq: { branches: 2, rooms: 3, trainers: 3, classes: 5, members: 0, class_sessions: 0, bookings: 0, checkIns: 0 },
-  };
+  } as unknown as Store; // the reward lists are added by normalize()
+  normalize(st);
   const slots: [number, number, number, number, string, number, number][] = [
     [1, 1, 1, 1, "10:00", 60, 20], [2, 2, 1, 1, "18:00", 55, 15], [3, 3, 1, 2, "12:00", 45, 12],
     [4, 3, 1, 2, "19:00", 45, 10], [5, 2, 2, 3, "09:00", 60, 25], [1, 1, 2, 3, "17:30", 60, 25],
@@ -105,13 +142,49 @@ async function seed(): Promise<Store> {
     ["Dana", "Admin", "+77000000001", "admin123", "Admin", null],
     ["Aigerim", "Sadykova", "+77000000002", "trainer123", "Trainer", 1],
     ["Madina", "Orazova", "+77000000003", "reception123", "Receptionist", null],
+    ["Aruzhan", "Bekova", "+77000000004", "member123", "Member", null],
+    ["Timur", "Sarsen", "+77000000005", "member123", "Member", null],
   ];
   for (const [n, s, p, pw, role, tid] of accounts) {
     const h = await hashPassword(pw);
     st.members.push({ member_id: ++st.seq.members, member_name: n, member_surname: s, phone_number: p, membership_status: "Active",
       membership_expiry: plusDays(365), role, trainer_id: tid, preferred_language: "en", pw_salt: h.salt, pw_hash: h.hash });
   }
+  seedHistory(st);
   return st;
+}
+
+/**
+ * Demo history so points, badges, the leaderboard and reviews have something to
+ * show: the last 5 weeks of classes, Aruzhan (member 4) came 2-3 times a week
+ * and missed once; Timur (member 5) came a few times. One review is left.
+ */
+function seedHistory(st: Store) {
+  const past: [number, number, number, number, string, number][] = [ // days ago, class, trainer, room(branch), time, minutes
+    [33, 1, 1, 1, "08:00", 60], [31, 3, 3, 2, "12:00", 45], [26, 2, 2, 1, "18:00", 55], [24, 1, 1, 1, "08:00", 60],
+    [19, 4, 3, 2, "19:00", 45], [17, 5, 2, 3, "08:00", 60], [12, 1, 1, 1, "08:00", 60], [10, 3, 3, 2, "12:00", 45],
+    [5, 2, 2, 1, "18:00", 55], [3, 1, 1, 1, "08:00", 60], [2, 4, 3, 2, "19:00", 45],
+  ];
+  const branchOf = (room: number) => st.rooms.find((r) => r.room_id === room)!.branch_id;
+  past.forEach(([ago, cls, tr, room, hm, mins], i) => {
+    const day = new Date(Date.parse(todayYmd() + "T00:00:00Z") - ago * 86400_000).toISOString().slice(0, 10);
+    const start = new Date(`${day}T${hm}:00+05:00`).getTime();
+    const sid = ++st.seq.class_sessions;
+    st.sessions.push({ session_id: sid, class_id: cls, trainer_id: tr, branch_id: branchOf(room), room_id: room,
+      start_time: new Date(start).toISOString(), end_time: new Date(start + mins * 60_000).toISOString(), capacity: 15 });
+    const add = (member: number, status: BookingRow["booking_status"]) => st.bookings.push({ booking_id: ++st.seq.bookings,
+      member_id: member, session_id: sid, booking_status: status, booking_time: new Date(start - 86400_000).toISOString(),
+      cancelled_at: null, fee_forfeited: status === "No-show" });
+    add(4, i === 4 ? "No-show" : "Attended");
+    if (i % 3 === 0) add(5, "Attended");
+  });
+  // Aruzhan rated the yoga class 3 days ago (trainer 1 = the demo trainer account)
+  const b = st.bookings.find((x) => x.member_id === 4 && st.sessions.find((s) => s.session_id === x.session_id)?.class_id === 1
+    && Date.now() - new Date(st.sessions.find((s) => s.session_id === x.session_id)!.start_time).getTime() < 7 * 86400_000)!;
+  const s = st.sessions.find((x) => x.session_id === b.session_id)!;
+  st.reviews.push({ review_id: ++st.seq.reviews, booking_id: b.booking_id, member_id: 4, session_id: s.session_id, trainer_id: s.trainer_id,
+    rating: 5, comment: "Calm music, clear explanations.", created_at: s.end_time, updated_at: s.end_time });
+  st.reviewPoints[b.booking_id] = { given: s.end_time };
 }
 
 /** Same rule as mark_no_shows() in schema.sql: a booking still 'Confirmed'
@@ -135,7 +208,7 @@ async function load(): Promise<Store> {
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
-      const st = JSON.parse(raw) as Store;
+      const st = normalize(JSON.parse(raw) as Store);
       if (markNoShows(st)) save(st);
       return st;
     }
@@ -240,6 +313,15 @@ function validate(st: Store, entity: Entity, row: Row, id: number | null): strin
       if (row.membership_status && !["Active", "Suspended"].includes(str(row.membership_status))) return "invalid_value";
       return null;
     }
+    case "rewards": {  // same CHECKs as the rewards table
+      const cost = num(row.cost), stock = row.stock === null || row.stock === undefined ? null : num(row.stock);
+      const days = row.extend_days === null || row.extend_days === undefined ? null : num(row.extend_days);
+      if (!str(row.reward_name) || !REWARD_KINDS.includes(str(row.kind) as Reward["kind"])) return "required";
+      if (!(cost >= 1 && cost <= 100000) || (stock !== null && !(stock >= 0))) return "invalid_value";
+      if (days !== null && !(days >= 1 && days <= 365)) return "invalid_value";
+      if (row.kind === "membership_days" && days === null) return "reward_needs_days";
+      return null;
+    }
   }
 }
 
@@ -251,10 +333,11 @@ function inUse(st: Store, entity: Entity, id: number): boolean {
     case "classes": return st.sessions.some((s) => s.class_id === id);
     case "class_sessions": return st.bookings.some((b) => b.session_id === id);
     case "members": return true;
+    case "rewards": return st.redemptions.some((r) => r.reward_id === id);
   }
 }
 
-const NUMERIC = new Set(["branch_id", "room_id", "trainer_id", "class_id", "max_capacity", "duration_min", "capacity"]);
+const NUMERIC = new Set(["branch_id", "room_id", "trainer_id", "class_id", "max_capacity", "duration_min", "capacity", "cost", "stock", "extend_days"]);
 function coerce(row: Row): Row {
   const out: Row = {};
   for (const [k, v] of Object.entries(row)) {
@@ -287,6 +370,115 @@ const readAsDataUrl = (f: File) => new Promise<string>((res, rej) => {
   r.onerror = () => rej(r.error);
   r.readAsDataURL(f);
 });
+
+// ---------- Pulse points (derived from bookings, reviews and redemptions) ----------
+const W_MS = 7 * 86400_000;
+function ledgerFor(st: Store, memberId: number): PointsEntry[] {
+  const out: PointsEntry[] = [];
+  const add = (delta: number, reason: PointsEntry["reason"], created_at: string, extra: Partial<PointsEntry> = {}) =>
+    out.push({ entry_id: out.length + 1, delta, reason, created_at, class_name: null, start_time: null, reward_name: null, ...extra });
+  const attendedStarts: string[] = [];
+  for (const b of st.bookings.filter((x) => x.member_id === memberId)) {
+    const ses = st.sessions.find((x) => x.session_id === b.session_id)!;
+    const cls = { class_name: st.classes.find((c) => c.class_id === ses.class_id)?.class_name ?? null, start_time: ses.start_time };
+    if (b.booking_status === "Attended") { add(POINTS.attended, "attended", ses.start_time, cls); attendedStarts.push(ses.start_time); }
+    if (b.booking_status === "No-show") add(POINTS.no_show, "no_show", ses.end_time, cls);
+    if (b.booking_status === "Cancelled" && b.excused_at) {
+      add(POINTS.no_show, "no_show", ses.end_time, cls);
+      add(-POINTS.no_show, "no_show_reversed", b.excused_at, cls);
+    }
+    const rp = st.reviewPoints[b.booking_id];
+    if (rp) {
+      add(POINTS.review, "review", rp.given, cls);
+      if (rp.removed) add(-POINTS.review, "review_removed", rp.removed, cls);
+    }
+  }
+  // +20 for every 4th week in a row
+  const weeks = Array.from(new Set(attendedStarts.map(almatyWeekStart))).sort((a, b) => a - b);
+  let run = 0;
+  weeks.forEach((w, i) => {
+    run = i > 0 && w === weeks[i - 1] + W_MS ? run + 1 : 1;
+    if (run % POINTS.streak_every === 0) add(POINTS.streak_bonus, "streak_bonus", new Date(w + 6 * 86400_000).toISOString());
+  });
+  for (const r of st.redemptions.filter((x) => x.member_id === memberId)) {
+    const name = st.rewards.find((w) => w.reward_id === r.reward_id)?.reward_name ?? null;
+    add(-r.cost, "redeem", r.created_at, { reward_name: name });
+    if (r.status === "Cancelled" && r.cancelled_at) add(r.cost, "redeem_refund", r.cancelled_at, { reward_name: name });
+  }
+  return out.sort((a, b) => b.created_at.localeCompare(a.created_at) || b.entry_id - a.entry_id);
+}
+
+const monthStartIso = () => { // 1st of this month, 00:00 Almaty
+  const d = new Date(Date.now() + TZ_OFFSET_H * 3600_000);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) - TZ_OFFSET_H * 3600_000).toISOString();
+};
+
+function summaryFor(st: Store, memberId: number): PointsSummary {
+  const l = ledgerFor(st, memberId);
+  const sum = (f: (e: PointsEntry) => boolean) => l.filter(f).reduce((a, e) => a + e.delta, 0);
+  const month = monthStartIso();
+  const attended = st.bookings.filter((b) => b.member_id === memberId && b.booking_status === "Attended")
+    .map((b) => st.sessions.find((x) => x.session_id === b.session_id)!.start_time);
+  return {
+    balance: sum(() => true),
+    lifetime: sum((e) => e.reason === "attended" || e.reason === "streak_bonus" || e.reason === "review"),
+    month_points: sum((e) => e.created_at >= month && e.reason !== "redeem" && e.reason !== "redeem_refund"),
+    streak: streakWeeks(attended),
+    streak_bonuses: l.filter((e) => e.reason === "streak_bonus").length,
+  };
+}
+
+function vRedemption(st: Store, r: DRedemption): Redemption {
+  const m = st.members.find((x) => x.member_id === r.member_id)!;
+  const w = st.rewards.find((x) => x.reward_id === r.reward_id)!;
+  return { redemption_id: r.redemption_id, member_id: r.member_id, member_fullname: `${m.member_name} ${m.member_surname}`,
+    phone_number: m.phone_number, reward_id: r.reward_id, reward_name: w.reward_name, kind: w.kind, extend_days: w.extend_days,
+    cost: r.cost, code: r.code, status: r.status, created_at: r.created_at, used_at: r.used_at, cancelled_at: r.cancelled_at };
+}
+
+// ---------- waitlist (same rules as promote_waitlist() in migration_waitlist.sql) ----------
+function promoteWaitlist(st: Store, sessionId: number) {
+  const s = st.sessions.find((x) => x.session_id === sessionId);
+  if (!s) return;
+  const waiting = () => st.waitlist.filter((w) => w.session_id === sessionId && w.status === "Waiting")
+    .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.entry_id - b.entry_id);
+  if (s.cancelled_at) {
+    for (const w of waiting()) Object.assign(w, { status: "Expired", status_reason: "session_cancelled", updated_at: nowIso() });
+    return;
+  }
+  if (new Date(s.start_time).getTime() - Date.now() < WAITLIST_CLOSES_MS) return;
+  while (taken(st, sessionId) < s.capacity) {
+    const w = waiting()[0];
+    if (!w) return;
+    const m = st.members.find((x) => x.member_id === w.member_id)!;
+    let reason: WaitlistEntry["status_reason"] = null;
+    if (m.membership_status === "Suspended" || m.membership_expiry < almatyYmd(s.start_time)) reason = "membership";
+    else if (st.bookings.some((b) => {
+      if (b.member_id !== m.member_id || b.session_id === sessionId || (b.booking_status !== "Confirmed" && b.booking_status !== "Attended")) return false;
+      const o = st.sessions.find((x) => x.session_id === b.session_id)!;
+      return new Date(o.start_time) < new Date(s.end_time) && new Date(s.start_time) < new Date(o.end_time);
+    })) reason = "time_conflict";
+    if (reason) { Object.assign(w, { status: "Expired", status_reason: reason, updated_at: nowIso() }); continue; }
+    let b = st.bookings.find((x) => x.member_id === m.member_id && x.session_id === sessionId);
+    if (b && b.booking_status !== "Cancelled") { Object.assign(w, { status: "Promoted", booking_id: b.booking_id, updated_at: nowIso() }); continue; }
+    if (b) Object.assign(b, { booking_status: "Confirmed", booking_time: nowIso(), cancelled_at: null, fee_forfeited: false });
+    else {
+      b = { booking_id: ++st.seq.bookings, member_id: m.member_id, session_id: sessionId, booking_status: "Confirmed",
+        booking_time: nowIso(), cancelled_at: null, fee_forfeited: false };
+      st.bookings.push(b);
+    }
+    Object.assign(w, { status: "Promoted", promoted_auto: true, booking_id: b.booking_id, updated_at: nowIso() });
+  }
+}
+
+/** The member booked the class themself: no longer waiting for it. */
+function markBookedFromQueue(st: Store, memberId: number, sessionId: number, bookingId: number) {
+  for (const w of st.waitlist) {
+    if (w.member_id === memberId && w.session_id === sessionId && w.status === "Waiting") {
+      Object.assign(w, { status: "Promoted", booking_id: bookingId, updated_at: nowIso() });
+    }
+  }
+}
 
 export const demoApi: Api = {
   mode: "demo",
@@ -438,6 +630,7 @@ export const demoApi: Api = {
     if (old) Object.assign(old, { booking_status: "Confirmed", booking_time: nowIso(), cancelled_at: null, fee_forfeited: false });
     else st.bookings.push({ booking_id: ++st.seq.bookings, member_id: m.member_id, session_id: sessionId, booking_status: "Confirmed",
       booking_time: nowIso(), cancelled_at: null, fee_forfeited: false });
+    markBookedFromQueue(st, m.member_id, sessionId, (old ?? st.bookings[st.bookings.length - 1]).booking_id);
     save(st);
     return ok("booked");
   },
@@ -453,7 +646,18 @@ export const demoApi: Api = {
     const late = start - Date.now() < FREE_CANCEL_MS;
     if (late && !acceptFee) return no("late_cancel_needs_confirm");
     Object.assign(b, { booking_status: "Cancelled", cancelled_at: nowIso(), fee_forfeited: late });
+    if (late) {  // late-cancel pass (like the use_late_cancel_pass trigger): the fee is not taken
+      const pass = st.redemptions.filter((r) => r.member_id === b.member_id && r.status === "Active"
+        && st.rewards.find((w) => w.reward_id === r.reward_id)?.kind === "late_cancel_pass")
+        .sort((x, y) => x.created_at.localeCompare(y.created_at))[0];
+      if (pass) {
+        b.fee_forfeited = false;
+        Object.assign(pass, { status: "Used", used_at: nowIso(), used_booking_id: b.booking_id });
+      }
+    }
+    promoteWaitlist(st, b.session_id);
     save(st);
+    // the same code as cancel_booking() returns; the page checks fee_forfeited afterwards
     return ok(late ? "cancelled_fee_forfeited" : "cancelled");
   },
 
@@ -516,7 +720,9 @@ export const demoApi: Api = {
         || ms(next.start_time) !== ms(s.start_time) || ms(next.end_time) !== ms(s.end_time);
       if (moved && taken(st, id) > 0) return no("session_has_bookings");
     }
+    const before = entity === "class_sessions" ? Number(target.capacity) : 0;
     Object.assign(target, row);
+    if (entity === "class_sessions" && Number(target.capacity) > before) promoteWaitlist(st, id);
     save(st);
     return ok("updated");
   },
@@ -547,6 +753,7 @@ export const demoApi: Api = {
       }
     }
     s.cancelled_at = at;
+    promoteWaitlist(st, sessionId); // the class is cancelled: the queue expires
     save(st);
     return ok("session_cancelled_done");
   },
@@ -758,5 +965,251 @@ export const demoApi: Api = {
     Object.assign(a, { status: "Approved", reviewed_at: nowIso(), trainer_id: trainerId });
     save(st);
     return ok("application_approved");
+  },
+  // ---------- Pulse points and rewards (same rules as migration_points_rewards.sql) ----------
+  async myPoints() {
+    const st = await load();
+    const m = me(st);
+    return m ? summaryFor(st, m.member_id) : null;
+  },
+
+  async myPointsHistory() {
+    const st = await load();
+    const m = me(st);
+    return m ? ledgerFor(st, m.member_id).slice(0, 30) : [];
+  },
+
+  async leaderboard() {
+    const st = await load();
+    const m = me(st);
+    if (!m) return null;
+    const month = monthStartIso();
+    const rows = st.members.filter((x) => x.role === "Member" || x.role === "Trainer")
+      .map((x) => ({ x, points: ledgerFor(st, x.member_id)
+        .filter((e) => e.created_at >= month && e.reason !== "redeem" && e.reason !== "redeem_refund")
+        .reduce((a, e) => a + e.delta, 0) }))
+      .filter((r) => r.points > 0)
+      .sort((a, b) => b.points - a.points);
+    const ranked = rows.map((r) => ({ ...r, place: rows.findIndex((o) => o.points === r.points) + 1 }));
+    const mine = ranked.find((r) => r.x.member_id === m.member_id);
+    return {
+      top: ranked.slice(0, 10).map((r) => ({ place: r.place, name: `${r.x.member_name} ${r.x.member_surname.slice(0, 1)}.`,
+        points: r.points, is_me: r.x.member_id === m.member_id })),
+      me: mine ? { place: mine.place, points: mine.points } : null,
+    };
+  },
+
+  async listRewards() {
+    const st = await load();
+    return st.rewards.filter((r) => r.active).sort((a, b) => a.cost - b.cost);
+  },
+
+  async redeemReward(rewardId) {
+    const st = await load();
+    const m = me(st);
+    if (!m) return no("not_signed_in");
+    if (m.role === "Admin" || m.role === "Receptionist") return no("staff_cannot_redeem");
+    const w = st.rewards.find((x) => x.reward_id === rewardId);
+    if (!w || !w.active) return no("reward_unavailable");
+    if (w.stock !== null && w.stock <= 0) return no("out_of_stock");
+    const activePass = st.redemptions.some((r) => r.member_id === m.member_id && r.status === "Active"
+      && st.rewards.find((x) => x.reward_id === r.reward_id)?.kind === "late_cancel_pass");
+    if (w.kind === "late_cancel_pass" && activePass) return no("pass_already_active");
+    if (summaryFor(st, m.member_id).balance < w.cost) return no("not_enough_points");
+    let code = "";
+    do code = "PG-" + Math.random().toString(36).slice(2, 8).toUpperCase().padEnd(6, "0");
+    while (st.redemptions.some((r) => r.code === code));
+    const r: DRedemption = { redemption_id: ++st.seq.redemptions, member_id: m.member_id, reward_id: w.reward_id, cost: w.cost,
+      code, status: "Active", created_at: nowIso(), used_at: null, cancelled_at: null };
+    st.redemptions.push(r);
+    if (w.stock !== null) w.stock -= 1;
+    if (w.kind === "membership_days") {  // applied at once
+      const from = m.membership_expiry > todayYmd() ? m.membership_expiry : todayYmd();
+      m.membership_expiry = new Date(Date.parse(from + "T00:00:00Z") + (w.extend_days ?? 0) * 86400_000).toISOString().slice(0, 10);
+      Object.assign(r, { status: "Used", used_at: nowIso() });
+    }
+    save(st);
+    return { ok: true, code: "redeemed", redemption_code: code };
+  },
+
+  async myRedemptions() {
+    const st = await load();
+    const m = me(st);
+    if (!m) return [];
+    return st.redemptions.filter((r) => r.member_id === m.member_id).map((r) => vRedemption(st, r))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  },
+
+  async cancelRedemption(redemptionId) {
+    const st = await load();
+    const m = me(st);
+    const r = st.redemptions.find((x) => x.redemption_id === redemptionId && (x.member_id === m?.member_id || isStaff(st)));
+    if (!r) return no("redemption_not_found");
+    if (r.status !== "Active") return no("redemption_not_active");
+    Object.assign(r, { status: "Cancelled", cancelled_at: nowIso() });
+    const w = st.rewards.find((x) => x.reward_id === r.reward_id);
+    if (w && w.stock !== null) w.stock += 1;
+    save(st);
+    return ok("redemption_cancelled");
+  },
+
+  async staffRedemptions() {
+    const st = await load();
+    if (!isStaff(st)) return [];
+    return st.redemptions.map((r) => vRedemption(st, r))
+      .sort((a, b) => Number(b.status === "Active") - Number(a.status === "Active") || b.created_at.localeCompare(a.created_at));
+  },
+
+  async useRedemption(redemptionId) {
+    const st = await load();
+    if (!isStaff(st)) return no("staff_only");
+    const r = st.redemptions.find((x) => x.redemption_id === redemptionId);
+    if (!r) return no("redemption_not_found");
+    if (r.status !== "Active") return no("redemption_not_active");
+    const kind = st.rewards.find((x) => x.reward_id === r.reward_id)?.kind;
+    if (kind !== "free_class" && kind !== "merch") return no("redemption_auto");
+    Object.assign(r, { status: "Used", used_at: nowIso() });
+    save(st);
+    return ok("redemption_used");
+  },
+
+  // ---------- waitlist (same rules as migration_waitlist.sql) ----------
+  async waitlistCounts() {
+    const st = await load();
+    const out: Record<number, number> = {};
+    for (const w of st.waitlist) {
+      const s = st.sessions.find((x) => x.session_id === w.session_id);
+      if (w.status !== "Waiting" || !s || s.cancelled_at || new Date(s.start_time).getTime() - Date.now() < WAITLIST_CLOSES_MS) continue;
+      out[w.session_id] = (out[w.session_id] ?? 0) + 1;
+    }
+    return out;
+  },
+
+  async myWaitlist() {
+    const st = await load();
+    const m = me(st);
+    if (!m) return [];
+    return st.waitlist.filter((w) => w.member_id === m.member_id).map((w) => {
+      const s = st.sessions.find((x) => x.session_id === w.session_id)!;
+      const v = vSession(st, s);
+      const closed = !!s.cancelled_at || new Date(s.start_time).getTime() - Date.now() < WAITLIST_CLOSES_MS;
+      const queue = st.waitlist.filter((q) => q.session_id === w.session_id && q.status === "Waiting")
+        .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.entry_id - b.entry_id);
+      return { entry_id: w.entry_id, session_id: w.session_id, booking_id: w.booking_id,
+        status: w.status === "Waiting" && closed ? "Expired" : w.status, promoted_auto: w.promoted_auto, status_reason: w.status_reason,
+        position: w.status === "Waiting" ? queue.findIndex((q) => q.entry_id === w.entry_id) + 1 : null,
+        created_at: w.created_at, updated_at: w.updated_at, class_name: v.class_name, trainer_name: v.trainer_name,
+        branch_name: v.branch_name, room_name: v.room_name, start_time: s.start_time, end_time: s.end_time } as WaitlistEntry;
+    }).sort((a, b) => b.start_time.localeCompare(a.start_time));
+  },
+
+  async joinWaitlist(sessionId) {
+    const st = await load();
+    const m = me(st);
+    if (!m) return no("not_signed_in");
+    if (m.role === "Admin" || m.role === "Receptionist") return no("staff_cannot_book");
+    const s = st.sessions.find((x) => x.session_id === sessionId);
+    if (!s) return no("session_not_found");
+    if (s.cancelled_at) return no("session_cancelled");
+    if (new Date(s.start_time).getTime() - Date.now() < WAITLIST_CLOSES_MS) return no("waitlist_closed");
+    if (m.membership_status === "Suspended") return no("membership_suspended");
+    if (m.membership_expiry < almatyYmd(s.start_time)) return no("membership_expired");
+    if (st.bookings.some((b) => b.member_id === m.member_id && b.session_id === sessionId
+      && (b.booking_status === "Confirmed" || b.booking_status === "Attended"))) return no("already_booked");
+    if (st.waitlist.some((w) => w.member_id === m.member_id && w.session_id === sessionId && w.status === "Waiting")) return no("already_waiting");
+    const clash = st.bookings.some((b) => {
+      if (b.member_id !== m.member_id || (b.booking_status !== "Confirmed" && b.booking_status !== "Attended")) return false;
+      const o = st.sessions.find((x) => x.session_id === b.session_id)!;
+      return new Date(o.start_time) < new Date(s.end_time) && new Date(s.start_time) < new Date(o.end_time);
+    });
+    if (clash) return no("time_conflict");
+    if (taken(st, sessionId) < s.capacity) return no("has_free_places");
+    const mine = st.waitlist.filter((w) => w.member_id === m.member_id && w.status === "Waiting"
+      && new Date(st.sessions.find((x) => x.session_id === w.session_id)!.start_time).getTime() > Date.now());
+    if (mine.length >= WAITLIST_MAX) return no("waitlist_limit");
+    st.waitlist.push({ entry_id: ++st.seq.waitlist, session_id: sessionId, member_id: m.member_id, status: "Waiting",
+      promoted_auto: false, status_reason: null, booking_id: null, created_at: nowIso(), updated_at: nowIso() });
+    save(st);
+    const position = st.waitlist.filter((w) => w.session_id === sessionId && w.status === "Waiting").length;
+    return { ok: true, code: "waitlist_joined", position };
+  },
+
+  async leaveWaitlist(sessionId) {
+    const st = await load();
+    const m = me(st);
+    const w = st.waitlist.find((x) => x.member_id === m?.member_id && x.session_id === sessionId && x.status === "Waiting");
+    if (!w) return no("not_waiting");
+    Object.assign(w, { status: "Left", updated_at: nowIso() });
+    save(st);
+    return ok("waitlist_left");
+  },
+
+  // ---------- reviews (same rules as migration_reviews.sql) ----------
+  async trainerRatings() {
+    const st = await load();
+    return st.trainers.map<TrainerRating>((t) => {
+      const rs = st.reviews.filter((r) => r.trainer_id === t.trainer_id);
+      return { trainer_id: t.trainer_id, trainer_name: t.trainer_name, reviews_count: rs.length,
+        avg_rating: rs.length ? Math.round((rs.reduce((a, r) => a + r.rating, 0) / rs.length) * 10) / 10 : 0 };
+    }).filter((r) => r.reviews_count > 0);
+  },
+
+  async myReviews() {
+    const st = await load();
+    const m = me(st);
+    if (!m) return [];
+    return st.reviews.filter((r) => r.member_id === m.member_id).map<MyReview>((r) => ({ review_id: r.review_id, booking_id: r.booking_id,
+      rating: r.rating, comment: r.comment, created_at: r.created_at, updated_at: r.updated_at }));
+  },
+
+  async submitReview(bookingId, rating, comment) {
+    const st = await load();
+    const m = me(st);
+    const b = st.bookings.find((x) => x.booking_id === bookingId && x.member_id === m?.member_id);
+    if (!m || !b) return no("booking_not_found");
+    if (b.booking_status !== "Attended") return no("review_not_attended");
+    const s = st.sessions.find((x) => x.session_id === b.session_id)!;
+    const end = new Date(s.end_time).getTime();
+    if (end > Date.now()) return no("review_too_early");
+    if (Date.now() - end > REVIEW_WINDOW_DAYS * 86400_000) return no("review_too_late");
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) return no("invalid_rating");
+    const text = comment.trim() || null;
+    if (text && text.length > REVIEW_MAX_CHARS) return no("invalid_value");
+    const old = st.reviews.find((r) => r.booking_id === bookingId);
+    if (old) Object.assign(old, { rating, comment: text, updated_at: nowIso() });
+    else st.reviews.push({ review_id: ++st.seq.reviews, booking_id: bookingId, member_id: m.member_id, session_id: s.session_id,
+      trainer_id: s.trainer_id, rating, comment: text, created_at: nowIso(), updated_at: nowIso() });
+    const first = !old && !st.reviewPoints[bookingId];   // points once per class
+    if (first) st.reviewPoints[bookingId] = { given: nowIso() };
+    save(st);
+    return ok(first ? "review_saved_points" : "review_saved");
+  },
+
+  async listReviews() {
+    const st = await load();
+    const m = me(st);
+    if (!m) return [];
+    const admin = m.role === "Admin";
+    if (!admin && !(m.role === "Trainer" && m.trainer_id !== null)) return [];
+    return st.reviews.filter((r) => admin || r.trainer_id === m.trainer_id).map<Review>((r) => {
+      const s = st.sessions.find((x) => x.session_id === r.session_id)!;
+      const who = st.members.find((x) => x.member_id === r.member_id);
+      return { review_id: r.review_id, rating: r.rating, comment: r.comment, created_at: r.created_at, updated_at: r.updated_at,
+        trainer_id: r.trainer_id, trainer_name: st.trainers.find((t) => t.trainer_id === r.trainer_id)?.trainer_name ?? "",
+        class_name: st.classes.find((c) => c.class_id === s.class_id)?.class_name ?? "", start_time: s.start_time,
+        member_fullname: admin && who ? `${who.member_name} ${who.member_surname}` : null };
+    }).sort((a, b) => b.created_at.localeCompare(a.created_at));
+  },
+
+  async deleteReview(reviewId) {
+    const st = await load();
+    if (!isAdmin(st)) return no("admin_only");
+    const i = st.reviews.findIndex((r) => r.review_id === reviewId);
+    if (i < 0) return no("review_not_found");
+    const [r] = st.reviews.splice(i, 1);
+    const rp = st.reviewPoints[r.booking_id];
+    if (rp && !rp.removed) rp.removed = nowIso();
+    save(st);
+    return ok("review_deleted");
   },
 };

@@ -241,3 +241,39 @@ Certificates live in the private Storage bucket `trainer-certificates` (5 MB, PD
   event. A sign-up that fails later (e.g. duplicate phone) rolls its event back.
 - `signup_rate_status()` → `{"allowed": bool, "retry_after": seconds}`; callable by `anon`, used by the
   app before creating an account. Both tables are closed to `anon` / `authenticated`.
+
+
+## Pulse points and rewards (`migration_points_rewards.sql`)
+
+- `points_ledger` — append-only; balance = `sum(delta)`. Reasons: `attended` (+10), `streak_bonus` (+20 every 4th week
+  in a row), `review` (+5), `no_show` (−5), `no_show_reversed` (+5), `review_removed` (−5), `redeem` (−cost),
+  `redeem_refund` (+cost). Unique per (booking, reason) and per (member, week) for streak bonuses, so nothing is counted twice.
+- Trigger `trg_points_on_booking_status` (AFTER UPDATE OF booking_status on `bookings`) writes the visit entries, so
+  `check_in_booking`, `manual_check_in`, `mark_no_shows` and `excuse_no_show` are unchanged.
+- `rewards` — catalog (`kind`: free_class, late_cancel_pass, membership_days, merch; `cost`; `stock` null = unlimited;
+  `extend_days`; `active`). Admin edits it in the admin panel (RLS like the other catalog tables).
+- `reward_redemptions` — one exchange: `code` (PG-XXXXXX), `status` Active / Used / Cancelled.
+- Trigger `trg_use_late_cancel_pass` (BEFORE UPDATE) turns `fee_forfeited` off on a late cancellation when the member
+  has an active pass and marks the pass Used.
+- Functions: `my_points()`, `points_leaderboard(limit)`, `redeem_reward(id)` (locks the member row, so parallel
+  exchanges can't spend the same points), `use_redemption(id)` (staff), `cancel_redemption(id)` (owner or staff, refund).
+- Views: `v_my_points_history` (own), `v_redemptions` (own; staff see all).
+
+## Waitlist (`migration_waitlist.sql`)
+
+- `waitlist` — `status` Waiting / Promoted / Left / Expired, `promoted_auto`, `status_reason`
+  (membership, time_conflict, session_cancelled). One Waiting entry per member and class.
+- `promote_waitlist(session)` locks the session row (like `book_session`) and books people in queue order while there
+  are free places; a member whose membership doesn't cover the date or who has another class at that time is skipped.
+- Deferred constraint triggers call it at the end of the transaction when a booking is cancelled or the capacity is
+  raised (deferred, so `cancel_session` — which cancels the bookings before marking the class — doesn't promote anyone
+  into a cancelled class; the queue is expired instead).
+- `join_waitlist(session)` / `leave_waitlist(session)`; the queue closes 3 hours before the start; at most 5 classes at a time.
+- Views: `v_waitlist_counts` (public), `v_my_waitlist` (own, with the place in the queue).
+
+## Reviews (`migration_reviews.sql`)
+
+- `class_reviews` — one per booking; rating 1–5, comment ≤ 500.
+- `submit_review(booking, rating, comment)`: only the member's own `Attended` booking, from the end of the class for 14
+  days; editable; the first review gives +5 points (once per class). `delete_review(id)`: admin, takes the 5 points back.
+- Views: `v_trainer_ratings` (public average), `v_my_reviews`, `v_reviews` (trainer: own classes without names; admin: all with names).
