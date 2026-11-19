@@ -168,6 +168,22 @@ export type WaitlistEntry = {
   class_name: string; trainer_name: string; branch_name: string; room_name: string; start_time: string; end_time: string;
 };
 
+// ---------- trainer class requests (migration_session_requests.sql) ----------
+export const REQUEST_MIN_AHEAD_MS = 3600_000;      // at least 1 hour ahead
+export const REQUEST_MAX_DAYS = 60;                // at most 60 days ahead
+export const REQUEST_MAX_PENDING = 10;
+export const REQUEST_NOTE_MAX = 300;
+export type SessionRequestStatus = "Pending" | "Approved" | "Rejected" | "Withdrawn";
+export type ClassTypeOption = { class_id: number; class_name: string; duration_min: number };
+export type RoomOption = { room_id: number; room_name: string; max_capacity: number; branch_id: number; branch_name: string };
+export type SessionRequestInput = { class_id: number; room_id: number; start_time: string; capacity: number; note: string };
+export type SessionRequest = {
+  request_id: number; trainer_id: number; trainer_name: string; class_id: number; class_name: string; duration_min: number;
+  branch_id: number; branch_name: string; room_id: number; room_name: string; max_capacity: number;
+  start_time: string; end_time: string; capacity: number; note: string | null; status: SessionRequestStatus;
+  reject_reason: string | null; created_at: string; reviewed_at: string | null; session_id: number | null;
+};
+
 // ---------- reviews (migration_reviews.sql) ----------
 export const REVIEW_WINDOW_DAYS = 14;
 export const REVIEW_MAX_CHARS = 500;
@@ -365,4 +381,23 @@ export interface Api {
   listReviews(): Promise<Review[]>;
   /** Admin removes a review; its points are taken back. Codes: `review_deleted`, `review_not_found`, `admin_only`. */
   deleteReview(reviewId: number): Promise<Result>;
+
+  // ---------- trainer class requests ----------
+  /** Class types and rooms a trainer can choose from (empty without the migration). */
+  requestOptions(): Promise<{ classes: ClassTypeOption[]; rooms: RoomOption[] }>;
+  /** Trainer: own requests. Admin: all requests, pending first. */
+  listSessionRequests(): Promise<SessionRequest[]>;
+  /**
+   * Trainer proposes a class; the end time follows from the class duration.
+   * Codes: `request_sent`, `trainer_only`, `request_too_soon`, `request_too_far`, `capacity_exceeds_room`,
+   * `room_overlap`, `trainer_overlap`, `request_overlap`, `request_limit`, `required`, `invalid_value`.
+   */
+  submitSessionRequest(i: SessionRequestInput): Promise<Result>;
+  /** Codes: `request_withdrawn`, `request_not_pending`. */
+  withdrawSessionRequest(requestId: number): Promise<Result>;
+  /**
+   * Admin. Approve creates the class in the schedule. Codes: `request_approved`, `request_rejected`,
+   * `request_not_pending`, `request_expired`, `room_overlap`, `trainer_overlap`, `capacity_exceeds_room`, `admin_only`.
+   */
+  reviewSessionRequest(requestId: number, approve: boolean, reason?: string): Promise<Result>;
 }

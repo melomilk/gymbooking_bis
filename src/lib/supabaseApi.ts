@@ -2,6 +2,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import type {
   Api, AttendanceRow, BookingRow, CertificateFile, Entity, Leaderboard, MyReview, PointsEntry, PointsSummary, Redemption,
   ResetRequest, Result, Review, Reward, Row, SessionRow, TrainerApplication, TrainerRating, WaitlistEntry,
+  ClassTypeOption, RoomOption, SessionRequest,
 } from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES } from "./types";
 import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
@@ -421,4 +422,26 @@ export const supabaseApi: Api = {
   },
 
   deleteReview: (reviewId) => rpc("delete_review", { p_review_id: reviewId }),
+
+  // ---------- trainer class requests (migration_session_requests.sql) ----------
+  async requestOptions() {
+    const [c, r] = await Promise.all([
+      sb().from("v_class_types").select("*").order("class_name"),
+      sb().from("v_rooms").select("*").order("branch_name").order("room_name"),
+    ]);
+    return { classes: (c.data ?? []) as ClassTypeOption[], rooms: (r.data ?? []) as RoomOption[] };
+  },
+
+  async listSessionRequests() {
+    const { data } = await sb().from("v_session_requests").select("*").order("created_at", { ascending: false }).limit(200);
+    const rows = (data ?? []) as SessionRequest[];
+    return rows.sort((a, b) => Number(b.status === "Pending") - Number(a.status === "Pending"));
+  },
+
+  submitSessionRequest: (i) => rpc("submit_session_request", {
+    p_class_id: i.class_id, p_room_id: i.room_id, p_start_time: i.start_time, p_capacity: i.capacity, p_note: i.note,
+  }),
+  withdrawSessionRequest: (id) => rpc("withdraw_session_request", { p_request_id: id }),
+  reviewSessionRequest: (id, approve, reason) =>
+    rpc("review_session_request", { p_request_id: id, p_approve: approve, p_reason: reason ?? null }),
 };

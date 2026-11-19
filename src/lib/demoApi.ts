@@ -3,10 +3,11 @@
 // Passwords are stored as salted PBKDF2 hashes even here (NFR-03).
 import type {
   Api, AttendanceRow, CertificateFile, TrainerApplication, Branch, BookingRow, ClassType, Entity, Me, MemberRow, Reader, Result, Room, RosterRow, Row, SessionRow, Trainer,
-  Leaderboard, MyReview, PointsEntry, PointsSummary, Redemption, Review, Reward, TrainerRating, WaitlistEntry,
+  Leaderboard, MyReview, PointsEntry, PointsSummary, Redemption, Review, Reward, TrainerRating, WaitlistEntry, SessionRequest,
 } from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES,
-  POINTS, REVIEW_MAX_CHARS, REVIEW_WINDOW_DAYS, REWARD_KINDS, WAITLIST_CLOSES_MS, WAITLIST_MAX } from "./types";
+  POINTS, REVIEW_MAX_CHARS, REVIEW_WINDOW_DAYS, REWARD_KINDS, WAITLIST_CLOSES_MS, WAITLIST_MAX,
+  REQUEST_MAX_DAYS, REQUEST_MAX_PENDING, REQUEST_MIN_AHEAD_MS, REQUEST_NOTE_MAX } from "./types";
 import { almatyWeekStart, streakWeeks } from "./rewards";
 import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
 import { CHECKIN_OPENS_MS, FREE_CANCEL_MS } from "./format";
@@ -41,7 +42,12 @@ type Extra = {
   rewards: Reward[]; redemptions: DRedemption[]; waitlist: DWait[]; reviews: DReview[];
   /** booking_id -> when the +5 for a review was given / taken back (points once per class) */
   reviewPoints: Record<number, { given: string; removed?: string }>;
+  /** trainer class requests (migration_session_requests.sql) */
+  sessionRequests: DRequest[];
 };
+type DRequest = { request_id: number; trainer_id: number; class_id: number; branch_id: number; room_id: number;
+  start_time: string; end_time: string; capacity: number; note: string | null; status: SessionRequest["status"];
+  reject_reason: string | null; created_at: string; reviewed_at: string | null; session_id: number | null };
 const DEMO_FILE_LIMIT = 700 * 1024;
 
 export const DEMO_ACCOUNTS = [
@@ -64,9 +70,9 @@ const STARTER_REWARDS: Omit<Reward, "reward_id">[] = [
 /** Stores saved by an older version lack the new lists. */
 function normalize(st: Store): Store {
   st.rewards ??= STARTER_REWARDS.map((r, i) => ({ ...r, reward_id: i + 1 }));
-  st.redemptions ??= []; st.waitlist ??= []; st.reviews ??= []; st.reviewPoints ??= {};
+  st.redemptions ??= []; st.waitlist ??= []; st.reviews ??= []; st.reviewPoints ??= {}; st.sessionRequests ??= [];
   st.seq.rewards ??= st.rewards.reduce((m, r) => Math.max(m, r.reward_id), 0);
-  for (const k of ["redemptions", "waitlist", "reviews"]) st.seq[k] ??= 0;
+  for (const k of ["redemptions", "waitlist", "reviews", "sessionRequests"]) st.seq[k] ??= 0;
   return st;
 }
 
@@ -478,6 +484,28 @@ function markBookedFromQueue(st: Store, memberId: number, sessionId: number, boo
       Object.assign(w, { status: "Promoted", booking_id: bookingId, updated_at: nowIso() });
     }
   }
+}
+
+// ---------- trainer class requests (same rules as migration_session_requests.sql) ----------
+const rangesOverlap = (a1: string, a2: string, b1: string, b2: string) =>
+  new Date(a1) < new Date(b2) && new Date(b1) < new Date(a2);
+
+/** null if the slot is free, else room_overlap / trainer_overlap / request_overlap */
+function slotProblem(st: Store, trainerId: number, roomId: number, start: string, end: string, skip: number | null) {
+  const live = st.sessions.filter((s) => !s.cancelled_at && rangesOverlap(s.start_time, s.end_time, start, end));
+  if (live.some((s) => s.room_id === roomId)) return "room_overlap";
+  if (live.some((s) => s.trainer_id === trainerId)) return "trainer_overlap";
+  if (st.sessionRequests.some((q) => q.trainer_id === trainerId && q.status === "Pending" && q.request_id !== skip
+    && rangesOverlap(q.start_time, q.end_time, start, end))) return "request_overlap";
+  return null;
+}
+
+function vRequest(st: Store, q: DRequest): SessionRequest {
+  const c = st.classes.find((x) => x.class_id === q.class_id)!;
+  const r = st.rooms.find((x) => x.room_id === q.room_id)!;
+  return { ...q, trainer_name: st.trainers.find((x) => x.trainer_id === q.trainer_id)?.trainer_name ?? "",
+    class_name: c.class_name, duration_min: c.duration_min, branch_name: st.branches.find((b) => b.branch_id === q.branch_id)?.branch_name ?? "",
+    room_name: r.room_name, max_capacity: r.max_capacity };
 }
 
 export const demoApi: Api = {
@@ -1211,5 +1239,88 @@ export const demoApi: Api = {
     if (rp && !rp.removed) rp.removed = nowIso();
     save(st);
     return ok("review_deleted");
+  },
+  // ---------- trainer class requests ----------
+  async requestOptions() {
+    const st = await load();
+    if (!me(st)) return { classes: [], rooms: [] };
+    return {
+      classes: st.classes.map(({ class_id, class_name, duration_min }) => ({ class_id, class_name, duration_min }))
+        .sort((a, b) => a.class_name.localeCompare(b.class_name)),
+      rooms: st.rooms.map((r) => ({ ...r, branch_name: st.branches.find((b) => b.branch_id === r.branch_id)?.branch_name ?? "" }))
+        .sort((a, b) => a.branch_name.localeCompare(b.branch_name) || a.room_name.localeCompare(b.room_name)),
+    };
+  },
+
+  async listSessionRequests() {
+    const st = await load();
+    const m = me(st);
+    if (!m) return [];
+    const admin = m.role === "Admin";
+    if (!admin && !(m.role === "Trainer" && m.trainer_id !== null)) return [];
+    return st.sessionRequests.filter((q) => admin || q.trainer_id === m.trainer_id).map((q) => vRequest(st, q))
+      .sort((a, b) => Number(b.status === "Pending") - Number(a.status === "Pending") || b.created_at.localeCompare(a.created_at));
+  },
+
+  async submitSessionRequest(i) {
+    const st = await load();
+    const m = me(st);
+    if (!m) return no("not_signed_in");
+    if (m.role !== "Trainer" || m.trainer_id === null) return no("trainer_only");
+    const c = st.classes.find((x) => x.class_id === i.class_id);
+    const r = st.rooms.find((x) => x.room_id === i.room_id);
+    const startMs = new Date(i.start_time).getTime();
+    if (!c || !r || !i.start_time || Number.isNaN(startMs)) return no("required");
+    if (startMs <= Date.now() + REQUEST_MIN_AHEAD_MS) return no("request_too_soon");
+    if (startMs > Date.now() + REQUEST_MAX_DAYS * 86400_000) return no("request_too_far");
+    if (!Number.isInteger(i.capacity) || i.capacity < 1) return no("invalid_value");
+    if (i.capacity > r.max_capacity) return no("capacity_exceeds_room");
+    const note = i.note.trim() || null;
+    if (note && note.length > REQUEST_NOTE_MAX) return no("invalid_value");
+    if (st.sessionRequests.filter((q) => q.trainer_id === m.trainer_id && q.status === "Pending").length >= REQUEST_MAX_PENDING) return no("request_limit");
+    const start = new Date(startMs).toISOString();
+    const end = new Date(startMs + c.duration_min * 60_000).toISOString();
+    const problem = slotProblem(st, m.trainer_id, r.room_id, start, end, null);
+    if (problem) return no(problem);
+    st.sessionRequests.push({ request_id: ++st.seq.sessionRequests, trainer_id: m.trainer_id, class_id: c.class_id, branch_id: r.branch_id,
+      room_id: r.room_id, start_time: start, end_time: end, capacity: i.capacity, note, status: "Pending", reject_reason: null,
+      created_at: nowIso(), reviewed_at: null, session_id: null });
+    save(st);
+    return ok("request_sent");
+  },
+
+  async withdrawSessionRequest(id) {
+    const st = await load();
+    const m = me(st);
+    const q = st.sessionRequests.find((x) => x.request_id === id && x.status === "Pending"
+      && m?.role === "Trainer" && x.trainer_id === m.trainer_id);
+    if (!q) return no("request_not_pending");
+    q.status = "Withdrawn";
+    save(st);
+    return ok("request_withdrawn");
+  },
+
+  async reviewSessionRequest(id, approve, reason) {
+    const st = await load();
+    if (!isAdmin(st)) return no("admin_only");
+    const q = st.sessionRequests.find((x) => x.request_id === id);
+    if (!q) return no("request_not_found");
+    if (q.status !== "Pending") return no("request_not_pending");
+    if (!approve) {
+      Object.assign(q, { status: "Rejected", reject_reason: reason?.trim().slice(0, REQUEST_NOTE_MAX) || null, reviewed_at: nowIso() });
+      save(st);
+      return ok("request_rejected");
+    }
+    if (new Date(q.start_time).getTime() <= Date.now()) return no("request_expired");
+    const problem = slotProblem(st, q.trainer_id, q.room_id, q.start_time, q.end_time, q.request_id);
+    if (problem === "room_overlap" || problem === "trainer_overlap") return no(problem);
+    const room = st.rooms.find((x) => x.room_id === q.room_id)!;
+    if (q.capacity > room.max_capacity) return no("capacity_exceeds_room");
+    const sid = ++st.seq.class_sessions;
+    st.sessions.push({ session_id: sid, class_id: q.class_id, trainer_id: q.trainer_id, branch_id: q.branch_id, room_id: q.room_id,
+      start_time: q.start_time, end_time: q.end_time, capacity: q.capacity });
+    Object.assign(q, { status: "Approved", reviewed_at: nowIso(), session_id: sid });
+    save(st);
+    return ok("request_approved");
   },
 };

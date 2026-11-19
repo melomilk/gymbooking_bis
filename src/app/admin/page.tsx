@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useRequireRole, useT } from "@/components/Providers";
 import { AdminReviews, AdminRewards, StaffRedemptions } from "@/components/Rewards";
+import { AdminSessionRequests, usePendingRequests } from "@/components/SessionRequests";
 import CrudSection, { type CrudConfig, type Form } from "@/components/CrudSection";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import { CHECKIN_OPENS_MS, dayKey, fmtDate, fmtDayShort, fmtTime, toIso } from "@/lib/format";
@@ -15,11 +16,11 @@ import { attendanceRate, fmtRate, LOW_ATTENDANCE } from "@/lib/stats";
 import { useSessionState } from "@/lib/useSessionState";
 
 type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "applications" | "checkin" | "noshows" | "report"
-  | "rewards" | "redemptions" | "reviews";
+  | "rewards" | "redemptions" | "reviews" | "sessionrequests";
 const TABS: { id: Tab; label: Key }[] = [
   { id: "sessions", label: "tab_sessions" }, { id: "classes", label: "tab_classes" }, { id: "trainers", label: "tab_trainers" },
   { id: "branches", label: "tab_branches" }, { id: "rooms", label: "tab_rooms" }, { id: "members", label: "tab_members" },
-  { id: "applications", label: "tab_applications" },
+  { id: "applications", label: "tab_applications" }, { id: "sessionrequests", label: "tab_session_requests" },
   { id: "checkin", label: "tab_checkin" }, { id: "noshows", label: "tab_noshows" }, { id: "report", label: "tab_report" },
   { id: "rewards", label: "tab_rewards" }, { id: "redemptions", label: "tab_redemptions" }, { id: "reviews", label: "tab_reviews" },
 ];
@@ -62,9 +63,11 @@ export default function AdminPage() {
 
   useEffect(() => { if (allowed) load(); }, [allowed, load]);
 
+  const [reqTick, setReqTick] = useState(0); // refreshes the class-request badge
+  const pendingRequests = usePendingRequests(allowed, reqTick);
   const onResult = useCallback((r: Result) => {
     setToast({ ok: r.ok, text: tr(r) });
-    if (r.ok) load();
+    if (r.ok) { load(); setReqTick((n) => n + 1); }
   }, [tr, load]);
 
   if (!allowed || !data) return <p className="muted">{t("loading")}</p>;
@@ -252,11 +255,14 @@ export default function AdminPage() {
           <button key={x.id} role="tab" aria-selected={tab === x.id} className={tab === x.id ? "active" : ""} onClick={() => setTab(x.id)}>
             {t(x.label)}
             {x.id === "applications" && pending > 0 && <span className="count">{pending}</span>}
+            {x.id === "sessionrequests" && pendingRequests > 0 && <span className="count">{pendingRequests}</span>}
           </button>
         ))}
       </div>
 
-      {tab === "rewards" ? (
+      {tab === "sessionrequests" ? (
+        <AdminSessionRequests onResult={onResult} />
+      ) : tab === "rewards" ? (
         <AdminRewards onResult={onResult} />
       ) : tab === "redemptions" ? (
         <StaffRedemptions onResult={onResult} />

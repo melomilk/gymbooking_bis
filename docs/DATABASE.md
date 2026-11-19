@@ -277,3 +277,18 @@ Certificates live in the private Storage bucket `trainer-certificates` (5 MB, PD
 - `submit_review(booking, rating, comment)`: only the member's own `Attended` booking, from the end of the class for 14
   days; editable; the first review gives +5 points (once per class). `delete_review(id)`: admin, takes the 5 points back.
 - Views: `v_trainer_ratings` (public average), `v_my_reviews`, `v_reviews` (trainer: own classes without names; admin: all with names).
+
+
+## Trainer class requests (`migration_session_requests.sql`)
+
+- `session_requests` — trainer, class, room (+ branch, same composite FK as `class_sessions`), start/end, capacity,
+  note, `status` Pending / Approved / Rejected / Withdrawn, `reject_reason`, `session_id` of the created class.
+- `submit_session_request(class, room, start, capacity, note)`: Trainer only; at least 1 hour and at most 60 days
+  ahead; end = start + class duration; capacity ≤ room size; the room and the trainer must be free
+  (`session_slot_problem()`: room_overlap / trainer_overlap / request_overlap with own pending requests);
+  at most 10 pending requests.
+- `withdraw_session_request(id)`: own pending request.
+- `review_session_request(id, approve, reason)`: admin; approve re-checks the slot and inserts the class
+  (`class_sessions` constraints still apply; their errors become result codes); reject stores the reason.
+- Views: `v_session_requests` (trainer: own; admin: all), `v_class_types` and `v_rooms` (read-only lists for the
+  form, since `classes` and `rooms` are admin-only tables).
