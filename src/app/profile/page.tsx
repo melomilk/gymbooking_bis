@@ -6,7 +6,8 @@ import { api } from "@/lib/api";
 import { useAuth, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import Modal from "@/components/Modal";
-import { FREE_CANCEL_MS, fmtDate, fmtDateTime, fmtDayShort, fmtTime } from "@/lib/format";
+import { fmtDate, fmtDateTime, fmtDayShort, fmtTime } from "@/lib/format";
+import { freeCancelDeadline, isLateCancel } from "@/lib/rules";
 import type { BookingRow, Result, TrainerApplication } from "@/lib/types";
 import { TrainerApplyForm } from "@/components/TrainerFields";
 import { attendanceRate, fmtRate } from "@/lib/stats";
@@ -74,8 +75,8 @@ export default function ProfilePage() {
   const rate = attendanceRate(attended, missed);
 
   const row = (b: BookingRow, canCancel: boolean) => {
-    const freeUntil = new Date(new Date(b.start_time).getTime() - FREE_CANCEL_MS);
-    const isLate = freeUntil.getTime() <= now;
+    const freeUntil = freeCancelDeadline(b.start_time);
+    const isLate = isLateCancel(b.start_time, now); // same rule as the API (exactly 3 h before is still free)
     return (
       <li key={b.booking_id} className="row-item" data-booking={b.booking_id}>
         <div>

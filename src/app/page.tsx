@@ -5,7 +5,8 @@ import { api } from "@/lib/api";
 import { useAuth, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import Modal from "@/components/Modal";
-import { dayKey, fmtDate, fmtDayLong, fmtDayShort, fmtTime, FREE_CANCEL_MS } from "@/lib/format";
+import { dayKey, fmtDate, fmtDayLong, fmtDayShort, fmtTime } from "@/lib/format";
+import { isLateCancel } from "@/lib/rules";
 import type { Branch, SessionRow } from "@/lib/types";
 import { useSessionState } from "@/lib/useSessionState";
 
@@ -61,7 +62,7 @@ export default function SchedulePage() {
   // Less than 3 hours before the start a booking can't be cancelled for free,
   // so the member confirms first (protects against a misclick).
   function requestBook(session: SessionRow) {
-    if (new Date(session.start_time).getTime() - Date.now() < FREE_CANCEL_MS) {
+    if (isLateCancel(session.start_time)) {
       setAlt(null);
       setConfirmBook(session);
       return;

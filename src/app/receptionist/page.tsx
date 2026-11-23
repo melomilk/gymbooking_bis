@@ -3,13 +3,13 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useRequireRole, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
-import { CHECKIN_OPENS_MS, fmtDayShort, fmtTime } from "@/lib/format";
+import CheckInPanel from "@/components/CheckInPanel";
 import type { BookingRow, Reader, Result } from "@/lib/types";
 import { useSessionState } from "@/lib/useSessionState";
 
 export default function ReceptionistPage() {
   const { allowed } = useRequireRole(["Receptionist", "Admin"]); // FR-10
-  const { t, tr, lang } = useT();
+  const { t, tr } = useT();
   const [bookings, setBookings] = useState<BookingRow[] | null>(null);
   const [readers, setReaders] = useState<Reader[]>([]);
   // remembered while the receptionist visits other pages (bug 19)
@@ -38,7 +38,6 @@ export default function ReceptionistPage() {
 
   if (!allowed || !bookings) return <p className="muted">{t("loading")}</p>;
 
-  const now = Date.now();
   const q = filter.trim().toLowerCase();
   const visible = q
     ? bookings.filter(
@@ -52,17 +51,7 @@ export default function ReceptionistPage() {
   return (
     <>
       <h1>{t("receptionist_title")}</h1>
-      <p className="muted small">{t("checkin_desc")}</p>
-      <p className="muted small">{t("manual_desc")}</p>
-
-      <div className="filters">
-        <select value={readerId} onChange={(e) => setReaderId(e.target.value)} aria-label={t("reader")}>
-          {readers.map((r) => (
-            <option key={r.reader_id} value={r.reader_id}>
-              {r.reader_id} · {r.branch_name} ({r.check_in_method})
-            </option>
-          ))}
-        </select>
+      <CheckInPanel bookings={visible} readers={readers} readerId={readerId} onReaderChange={setReaderId} onResult={onResult}>
         <input
           type="search"
           value={filter}
@@ -70,43 +59,7 @@ export default function ReceptionistPage() {
           placeholder={t("search_placeholder")}
           aria-label={t("search_btn")}
         />
-      </div>
-
-      {visible.length === 0 ? (
-        <p className="muted">{t("no_checkins")}</p>
-      ) : (
-        <ul className="list">
-          {visible.map((b) => (
-            <li key={b.booking_id} className="row-item">
-              <div>
-                <b>{b.member_fullname}</b> <span className="muted">· {b.class_name}</span>
-                <div className="small muted">
-                  {fmtDayShort(b.start_time, lang)}, {fmtTime(b.start_time)} · {b.branch_name}, {b.room_name}
-                </div>
-              </div>
-              <div className="right">
-                <span className={`pill ${b.booking_status.toLowerCase()}`}>{t(`bs_${b.booking_status}`)}</span>
-                {/* check-in opens 30 min before the start */}
-                {b.booking_status === "Confirmed" && new Date(b.start_time).getTime() - now > CHECKIN_OPENS_MS && (
-                  <span className="small muted">{t("checkin_opens_note")}</span>
-                )}
-                <button
-                  className="btn"
-                  disabled={b.booking_status !== "Confirmed" || !readerId || new Date(b.start_time).getTime() - now > CHECKIN_OPENS_MS}
-                  onClick={async () => onResult(await api.checkIn(b.booking_id, readerId))}
-                >
-                  {t("tap")}
-                </button>
-                {b.booking_status !== "Attended" && new Date(b.start_time).getTime() <= now && (
-                  <button className="btn ghost" onClick={async () => onResult(await api.manualCheckIn(b.booking_id))}>
-                    {t("manual_checkin")}
-                  </button>
-                )}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+      </CheckInPanel>
       <Toast msg={toast} onDone={() => setToast(null)} />
     </>
   );

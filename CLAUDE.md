@@ -22,12 +22,14 @@ Keep solutions simple and suitable for a course project. Avoid over-engineering.
 ### Repository map
 | Path | Contents |
 |---|---|
-| `src/app/` | Pages: `/` (schedule), `login`, `verify`, `reset`, `profile`, `search`, `trainer`, `receptionist`, `admin`; `api/` routes |
-| `src/components/` | `Header`, `Providers` (auth + language), `Modal`, `Toast`, `CrudSection`, `TrainerFields` |
-| `src/lib/` | `types.ts`, `api.ts`, `demoApi.ts`, `supabaseApi.ts`, `validate.ts`, `format.ts`, `stats.ts`, `i18n.ts`, `useSessionState.ts` |
-| `supabase/` | `schema.sql`, `seed.sql`, `migration_*.sql` |
-| `tests/` | `setup.ts` (in-memory localStorage), `backend/gym.test.ts`, `backend/helpers.ts` |
+| `src/app/` | Pages: `/` (schedule, `page.tsx`), `login`, `verify`, `reset`, `profile`, `search`, `trainer`, `receptionist`, `admin`; `layout.tsx` (root layout), `globals.css` |
+| `src/app/api/` | Server routes: `register/route.ts`, `reset-password/route.ts` (use the service-role key) |
+| `src/components/` | `Header`, `Providers` (auth + language), `Modal`, `Toast`, `CrudSection` (admin table editor), `TrainerFields`, `CheckInPanel` (check-in list shared by admin and reception) |
+| `src/lib/` | `types.ts` (`Api` interface), `api.ts` (picks demo or Supabase), `demoApi.ts`, `supabaseApi.ts`, `rules.ts` (shared rule checks: late cancel, check-in window, trainer link), `validate.ts`, `format.ts` (dates, rule constants), `stats.ts`, `i18n.ts`, `useSessionState.ts` |
+| `supabase/` | `schema.sql`, `seed.sql`, `migration_*.sql` (8 files; run order and a check query are in the README setup section) |
+| `tests/` | `setup.ts` (in-memory localStorage), `backend/gym.test.ts` (TC-01 to TC-35), `backend/consistency.test.ts` (TC-36 to TC-38: README setup vs SQL, SQL vs `demoApi.ts`), `backend/helpers.ts` |
 | `docs/` | `API.md`, `ARCHITECTURE.md`, `DATABASE.md` |
+| root | `AGENTS.md` (points here), `README.md`, `TEST_REPORT.md`, `package.json`, `package-lock.json`, `tsconfig.json`, `vitest.config.ts`, `next.config.mjs`, `.env.example` |
 
 ## Setup
 - Node.js 20+. Install with `npm ci` (uses the exact versions in `package-lock.json`).
@@ -70,13 +72,17 @@ There is no lint script or ESLint config yet. Don't add one without asking.
   (`supabase/schema.sql` plus a new `supabase/migration_<name>.sql` for existing databases).
   Never edit an old migration. Add a new one.
 - Security rules belong in the database (RLS / SQL functions). Hiding something in the UI is not enough.
-- Validation helpers go in `src/lib/validate.ts`; date/time and rule constants go in `src/lib/format.ts`.
+- Validation helpers go in `src/lib/validate.ts`; date/time helpers and rule constants go in `src/lib/format.ts`;
+  rule checks used by both pages and `demoApi.ts` go in `src/lib/rules.ts`.
 - Keep comments short and explain *why*. Reference requirement IDs (FR-xx / NFR-xx) where relevant.
 - Plain CSS in `src/app/globals.css`. No new UI or CSS libraries.
 
 ## Test expectations
 - Before saying a change is finished, run `npx tsc --noEmit`, then `npm test`, then `npm run build`. All must pass.
 - Tests run against `demoApi` only. Each test starts from a freshly seeded store (`tests/setup.ts`).
+- `tests/backend/consistency.test.ts` reads the SQL, the README and `demoApi.ts` as text and fails when they drift apart:
+  a function the app calls but the README setup doesn't create, a different cancel/check-in window, or different
+  result codes for booking, cancelling and check-in. If you change one side of a rule, change the other and keep these passing.
 - Every new or changed business rule needs a test in `tests/backend/gym.test.ts`:
   - continue the numbering (next ID after the last `TC-xx`);
   - check the result `code`, not only `ok`;

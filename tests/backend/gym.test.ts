@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { demoApi as api } from "../../src/lib/demoApi";
 import { H, DAY, ADMIN, TRAINER, loginAdmin, registerMember, firstSession, adminCreateSession } from "./helpers";
 import { formatPhone } from "../../src/lib/validate";
+import { checkInOpen, freeCancelDeadline, isLateCancel, trainerLinkError } from "../../src/lib/rules";
 
 describe("Registration & login (FR-04)", () => {
   it("TC-01 register: valid data creates a Member account and logs in", async () => {
@@ -440,5 +441,28 @@ describe("Manual test table, cases 16-17", () => {
     await api.logout();
     await api.login("+77011112233", "secret123");
     expect(await api.updateTrainerApplication(input, [], [pdf("x.pdf")])).toMatchObject({ ok: false, code: "application_not_pending" });
+  });
+});
+
+describe("Rule helpers (src/lib/rules.ts)", () => {
+  const now = 1_700_000_000_000;
+
+  it("TC-33 isLateCancel / freeCancelDeadline: exactly 3 h before is still free, 1 ms less is late", () => {
+    expect(isLateCancel(now + 3 * H, now)).toBe(false);
+    expect(isLateCancel(now + 3 * H - 1, now)).toBe(true);
+    expect(freeCancelDeadline(now + 3 * H).getTime()).toBe(now);
+  });
+
+  it("TC-34 checkInOpen: opens exactly 30 min before the start", () => {
+    expect(checkInOpen(now + 30 * 60_000, now)).toBe(true);
+    expect(checkInOpen(now + 30 * 60_000 + 1, now)).toBe(false);
+    expect(checkInOpen(now - H, now)).toBe(true);
+  });
+
+  it("TC-35 trainerLinkError: a Trainer needs a linked trainer profile, other roles don't", () => {
+    expect(trainerLinkError("Trainer", null)).toBe("trainer_needs_link");
+    expect(trainerLinkError("Trainer", "")).toBe("trainer_needs_link");
+    expect(trainerLinkError("Trainer", 3)).toBeNull();
+    expect(trainerLinkError("Member", null)).toBeNull();
   });
 });

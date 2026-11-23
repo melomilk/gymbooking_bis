@@ -168,9 +168,23 @@ Without environment variables, the app runs in **demo mode**: data is kept in th
 
 ### Connecting Supabase
 
-1. Create a Supabase project. In the **SQL Editor**, run `supabase/schema.sql`, then `supabase/seed.sql`,
-   then `supabase/migration_trainer_signup.sql`, `supabase/migration_signup_rate_limit.sql`
+1. Create a Supabase project. In the **SQL Editor**, run these files in this order:
+   `supabase/schema.sql`, `supabase/seed.sql`, `supabase/migration_trainer_signup.sql`,
+   `supabase/migration_application_edit.sql`, `supabase/migration_signup_rate_limit.sql`
    and `supabase/migration_excuse_no_show.sql`.
+   The other `migration_*.sql` files are only for databases created from an older `schema.sql`.
+   To check the setup, run this query. It must return all 12 functions that the app calls:
+
+   ```sql
+   select proname from pg_proc
+   where pronamespace = 'public'::regnamespace
+     and proname in ('book_session', 'cancel_booking', 'cancel_session', 'check_in_booking',
+                     'excuse_no_show', 'manual_check_in', 'mark_no_shows', 'review_trainer_application',
+                     'set_my_language', 'signup_rate_status', 'submit_trainer_application',
+                     'update_trainer_application')
+   order by proname;
+   ```
+   Test TC-36 (`tests/backend/consistency.test.ts`) fails if the app calls a function that these files don't create.
 2. Create `.env.local` (see `.env.example`):
 
    ```

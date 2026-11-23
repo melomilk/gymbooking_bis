@@ -4,7 +4,9 @@ import { api } from "@/lib/api";
 import { useRequireRole, useT } from "@/components/Providers";
 import CrudSection, { type CrudConfig, type Form } from "@/components/CrudSection";
 import Toast, { type ToastMsg } from "@/components/Toast";
-import { CHECKIN_OPENS_MS, dayKey, fmtDate, fmtDayShort, fmtTime, toIso } from "@/lib/format";
+import { dayKey, fmtDate, fmtDayShort, fmtTime, toIso } from "@/lib/format";
+import { trainerLinkError } from "@/lib/rules";
+import CheckInPanel from "@/components/CheckInPanel";
 import Modal from "@/components/Modal";
 import type { ExcuseReason, TrainerApplication } from "@/lib/types";
 import { EXCUSE_DOC_TYPES, EXCUSE_REASONS } from "@/lib/types";
@@ -228,7 +230,8 @@ export default function AdminPage() {
     ],
     toForm: (r) => ({ role: s(r.role), trainer_id: s(r.trainer_id), membership_status: s(r.membership_status), membership_expiry: s(r.membership_expiry) }),
     fromForm: (f) => {
-      if (f.role === "Trainer" && !f.trainer_id) return "trainer_needs_link";
+      const linkError = trainerLinkError(f.role, f.trainer_id);
+      if (linkError) return linkError;
       return { role: f.role, trainer_id: f.role === "Trainer" ? n(f.trainer_id) : null,
         membership_status: f.membership_status, membership_expiry: f.membership_expiry };
     },
@@ -262,40 +265,7 @@ export default function AdminPage() {
       ) : tab !== "checkin" ? (
         <CrudSection key={tab} storageKey={`admin.${tab}`} cfg={configs[tab]!} onResult={onResult} />
       ) : (
-        <>
-          <p className="muted small">{t("checkin_desc")}</p>
-          <p className="muted small">{t("manual_desc")}</p>
-          <div className="filters">
-            <select value={readerId} onChange={(e) => setReaderId(e.target.value)} aria-label={t("reader")}>
-              {data.readers.map((r) => <option key={r.reader_id} value={r.reader_id}>{r.reader_id} · {r.branch_name} ({r.check_in_method})</option>)}
-            </select>
-          </div>
-          {data.bookings.length === 0 ? <p className="muted">{t("no_checkins")}</p> : (
-            <ul className="list">
-              {data.bookings.map((b) => (
-                <li key={b.booking_id} className="row-item">
-                  <div>
-                    <b>{b.member_fullname}</b> <span className="muted">· {b.class_name}</span>
-                    <div className="small muted">{fmtDayShort(b.start_time, lang)}, {fmtTime(b.start_time)} · {b.branch_name}, {b.room_name}</div>
-                  </div>
-                  <div className="right">
-                    <span className={`pill ${b.booking_status.toLowerCase()}`}>{t(`bs_${b.booking_status}`)}</span>
-                    {/* check-in opens 30 min before the start */}
-                    {b.booking_status === "Confirmed" && new Date(b.start_time).getTime() - now > CHECKIN_OPENS_MS && (
-                      <span className="small muted">{t("checkin_opens_note")}</span>
-                    )}
-                    <button className="btn" disabled={b.booking_status !== "Confirmed" || !readerId || new Date(b.start_time).getTime() - now > CHECKIN_OPENS_MS}
-                      onClick={async () => onResult(await api.checkIn(b.booking_id, readerId))}>{t("tap")}</button>
-                    {/* Plan B: NFC failed. Only after the class has started (Task 7: no "Attended" for a future class). */}
-                    {b.booking_status !== "Attended" && new Date(b.start_time).getTime() <= now && (
-                      <button className="btn ghost" onClick={async () => onResult(await api.manualCheckIn(b.booking_id))}>{t("manual_checkin")}</button>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
+        <CheckInPanel bookings={data.bookings} readers={data.readers} readerId={readerId} onReaderChange={setReaderId} onResult={onResult} />
       )}
       {cancelling && (
         <Modal title={t("cancel_class_title")} onClose={() => setCancelling(null)} actions={<>

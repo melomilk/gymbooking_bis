@@ -6,7 +6,7 @@ import type {
 } from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES } from "./types";
 import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
-import { CHECKIN_OPENS_MS, FREE_CANCEL_MS } from "./format";
+import { checkInOpen, isLateCancel, trainerLinkError } from "./rules";
 
 const KEY = "gym-demo-v2";
 const TZ_OFFSET_H = 5; // Asia/Almaty
@@ -234,7 +234,8 @@ function validate(st: Store, entity: Entity, row: Row, id: number | null): strin
       const role = str(row.role ?? target.role);
       const tid = row.trainer_id === undefined ? target.trainer_id : row.trainer_id === null || row.trainer_id === "" ? null : num(row.trainer_id);
       if (!["Member", "Trainer", "Receptionist", "Admin"].includes(role)) return "invalid_value";
-      if (role === "Trainer" && tid === null) return "trainer_needs_link";
+      const linkError = trainerLinkError(role, tid);
+      if (linkError) return linkError;
       if (tid !== null && st.members.some((m) => m.member_id !== id && m.trainer_id === tid)) return "duplicate";
       if (target.member_id === st.current && target.role === "Admin" && role !== "Admin") return "cannot_demote_self";
       if (row.membership_status && !["Active", "Suspended"].includes(str(row.membership_status))) return "invalid_value";
@@ -450,7 +451,7 @@ export const demoApi: Api = {
     if (b.booking_status !== "Confirmed") return no("not_cancellable");
     const start = new Date(st.sessions.find((x) => x.session_id === b.session_id)!.start_time).getTime();
     if (start <= Date.now()) return no("class_started");
-    const late = start - Date.now() < FREE_CANCEL_MS;
+    const late = isLateCancel(start);
     if (late && !acceptFee) return no("late_cancel_needs_confirm");
     Object.assign(b, { booking_status: "Cancelled", cancelled_at: nowIso(), fee_forfeited: late });
     save(st);
@@ -577,7 +578,7 @@ export const demoApi: Api = {
     if (!r) return no("unknown_reader");
     const s = st.sessions.find((x) => x.session_id === b.session_id)!;
     if (r.branch_id !== s.branch_id) return no("wrong_branch_reader");
-    if (new Date(s.start_time).getTime() - Date.now() > CHECKIN_OPENS_MS) return no("checkin_too_early");
+    if (!checkInOpen(s.start_time)) return no("checkin_too_early");
     // both steps saved together (one transaction)
     st.checkIns.push({ check_in_id: ++st.seq.checkIns, booking_id: b.booking_id, reader_id: readerId, check_in_time: nowIso() });
     b.booking_status = "Attended";
