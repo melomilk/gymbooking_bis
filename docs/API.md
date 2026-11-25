@@ -247,3 +247,18 @@ never happened and the attendance report would be wrong.
   Codes: `excused`, `not_no_show`, `invalid_reason`, `note_required`,
   `document_required`, `pdf_only`, `file_too_large`, `upload_failed`, `booking_not_found`, `admin_only`.
 - `excuseDocumentUrl(path)`: 5-minute signed link to the PDF (admin or the booking's member).
+
+## Right now in the club (`migration_club_presence.sql`)
+
+| Method | Returns | Description |
+|---|---|---|
+| `clubNow(branchId)` | `ClubNow \| null` | `present`, `capacity`, `load` (`low` / `medium` / `high`), `people` (public members; empty when logged out), `hidden` (everyone else). `null` without the migration. |
+| `publicProfile(memberId)` | `PublicProfile \| null` | Visits (total, this month, first), attended classes, favourite class, where the member is now. `null` if private or logged out. |
+| `setProfilePublic(isPublic)` | `Result` | Codes: `profile_public_on`, `profile_public_off`, `not_signed_in`. |
+| `staffFindMembers(q)` | `MemberLookup[]` | Front desk: members / trainers by name or phone (max 10), with `in_club_branch_id`. |
+| `clubVisitsNow(branchId)` | `ClubVisit[]` | Front desk: open visits in the branch, newest first. |
+| `visitEnter(memberId, branchId)` | `Result` | Front desk marks "arrived". Codes: `visit_started`, `already_in_club`, `member_not_found`, `branch_not_found`, `visit_membership_expired`, `visit_membership_suspended`, `staff_only`. |
+| `visitLeave(visitId)` | `Result` | Front desk marks "left". Codes: `visit_ended`, `visit_not_open`, `staff_only`. |
+
+A visit without "left" counts as finished 3 hours after arrival (`VISIT_MAX_MS`). The load thresholds
+(40 % and 75 % of `branches.club_capacity`) live in `src/lib/club.ts` and in `club_load()` in SQL.

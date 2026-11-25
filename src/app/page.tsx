@@ -9,6 +9,7 @@ import { dayKey, fmtDate, fmtDayLong, fmtDayShort, fmtTime, FREE_CANCEL_MS } fro
 import { WAITLIST_CLOSES_MS, type Branch, type SessionRow, type TrainerRating, type WaitlistEntry } from "@/lib/types";
 import { Stars } from "@/components/Rewards";
 import { useSessionState } from "@/lib/useSessionState";
+import { ClubNowWidget } from "@/components/ClubNow";
 
 type Alt = { session: SessionRow; options: SessionRow[]; reason: string };
 
@@ -141,6 +142,8 @@ export default function SchedulePage() {
       {appPending && (
         <div className="notice">{t("app_pending_home")} <Link href="/profile#trainer-application">{t("app_view")}</Link></div>
       )}
+
+      <ClubNowWidget />
 
       <div className="filters">
         <select value={branch} onChange={(e) => setBranch(e.target.value)} aria-label={t("f_branch")}>

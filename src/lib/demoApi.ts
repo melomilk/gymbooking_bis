@@ -4,15 +4,17 @@
 import type {
   Api, AttendanceRow, CertificateFile, TrainerApplication, Branch, BookingRow, ClassType, Entity, Me, MemberRow, Reader, Result, Room, RosterRow, Row, SessionRow, Trainer,
   Leaderboard, MyReview, PointsEntry, PointsSummary, Redemption, Review, Reward, TrainerRating, WaitlistEntry, SessionRequest,
+  ClubPerson, ClubVisit, MemberLookup, PublicProfile,
 } from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES,
   POINTS, REVIEW_MAX_CHARS, REVIEW_WINDOW_DAYS, REWARD_KINDS, WAITLIST_CLOSES_MS, WAITLIST_MAX,
-  REQUEST_MAX_DAYS, REQUEST_MAX_PENDING, REQUEST_MIN_AHEAD_MS, REQUEST_NOTE_MAX } from "./types";
+  REQUEST_MAX_DAYS, REQUEST_MAX_PENDING, REQUEST_MIN_AHEAD_MS, REQUEST_NOTE_MAX, DEFAULT_CLUB_CAPACITY, VISIT_MAX_MS } from "./types";
+import { clubLoad, initialsOf, shortName } from "./club";
 import { almatyWeekStart, streakWeeks } from "./rewards";
 import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
 import { CHECKIN_OPENS_MS, FREE_CANCEL_MS } from "./format";
 
-const KEY = "gym-demo-v3"; // v3: points, rewards, waitlist, reviews + a demo member with visit history
+const KEY = "gym-demo-v4"; // v4: club visits ("right now in the club") + public profiles
 const TZ_OFFSET_H = 5; // Asia/Almaty
 
 type DMember = MemberRow & { pw_salt: string; pw_hash: string };
@@ -44,7 +46,10 @@ type Extra = {
   reviewPoints: Record<number, { given: string; removed?: string }>;
   /** trainer class requests (migration_session_requests.sql) */
   sessionRequests: DRequest[];
+  /** who came into the club and when (migration_club_presence.sql) */
+  visits: DVisit[];
 };
+type DVisit = { visit_id: number; member_id: number; branch_id: number; entered_at: string; left_at: string | null; marked_by: number | null };
 type DRequest = { request_id: number; trainer_id: number; class_id: number; branch_id: number; room_id: number;
   start_time: string; end_time: string; capacity: number; note: string | null; status: SessionRequest["status"];
   reject_reason: string | null; created_at: string; reviewed_at: string | null; session_id: number | null };
@@ -70,9 +75,10 @@ const STARTER_REWARDS: Omit<Reward, "reward_id">[] = [
 /** Stores saved by an older version lack the new lists. */
 function normalize(st: Store): Store {
   st.rewards ??= STARTER_REWARDS.map((r, i) => ({ ...r, reward_id: i + 1 }));
-  st.redemptions ??= []; st.waitlist ??= []; st.reviews ??= []; st.reviewPoints ??= {}; st.sessionRequests ??= [];
+  st.redemptions ??= []; st.waitlist ??= []; st.reviews ??= []; st.reviewPoints ??= {}; st.sessionRequests ??= []; st.visits ??= [];
+  for (const b of st.branches) b.club_capacity ??= DEFAULT_CLUB_CAPACITY;
   st.seq.rewards ??= st.rewards.reduce((m, r) => Math.max(m, r.reward_id), 0);
-  for (const k of ["redemptions", "waitlist", "reviews", "sessionRequests"]) st.seq[k] ??= 0;
+  for (const k of ["redemptions", "waitlist", "reviews", "sessionRequests", "visits"]) st.seq[k] ??= 0;
   return st;
 }
 
@@ -101,8 +107,8 @@ async function hashPassword(password: string, saltHex?: string) {
 async function seed(): Promise<Store> {
   const st = {
     branches: [
-      { branch_id: 1, branch_name: "Downtown", address: "12 Abay Ave, Almaty", phone_number: "+77270000001" },
-      { branch_id: 2, branch_name: "Riverside", address: "85 Dostyk Ave, Almaty", phone_number: "+77270000002" },
+      { branch_id: 1, branch_name: "Downtown", address: "12 Abay Ave, Almaty", phone_number: "+77270000001", club_capacity: 30 },
+      { branch_id: 2, branch_name: "Riverside", address: "85 Dostyk Ave, Almaty", phone_number: "+77270000002", club_capacity: 40 },
     ],
     rooms: [
       { room_id: 1, branch_id: 1, room_name: "Studio A", max_capacity: 25 },
@@ -157,7 +163,45 @@ async function seed(): Promise<Store> {
       membership_expiry: plusDays(365), role, trainer_id: tid, preferred_language: "en", pw_salt: h.salt, pw_hash: h.hash });
   }
   seedHistory(st);
+  seedClub(st);
   return st;
+}
+
+/**
+ * Demo crowd for "Right now in the club". These members have no password (they
+ * can't log in); they only make the widget and the load level look realistic.
+ * [name, surname, public profile, branch now (0 = not in the club), past visits]
+ */
+const CROWD: [string, string, boolean, number, number][] = [
+  ["Nurlan", "Khamitov", true, 1, 0], ["Alina", "Petrova", true, 1, 3], ["Ruslan", "Rakhimov", true, 1, 25],
+  ["Kamila", "Akhmetova", true, 1, 2], ["Dias", "Omarov", false, 1, 6], ["Erlan", "Zhakupov", false, 1, 11],
+  ["Saule", "Nurpeisova", false, 1, 4], ["Arman", "Tulegenov", false, 1, 1], ["Zarina", "Ismailova", true, 2, 8],
+  ["Bauyrzhan", "Seitkali", false, 1, 0], ["Aliya", "Mukanova", false, 1, 9], ["Ilyas", "Abenov", false, 2, 2],
+  ["Gulnara", "Sabitova", true, 0, 14],
+];
+
+function seedClub(st: Store) {
+  const now = Date.now();
+  const visit = (member: number, branch: number, enteredMs: number, open: boolean) => st.visits.push({ visit_id: ++st.seq.visits,
+    member_id: member, branch_id: branch, entered_at: new Date(enteredMs).toISOString(),
+    left_at: open ? null : new Date(enteredMs + 90 * 60_000).toISOString(), marked_by: 3 });
+  /** n closed visits spread over the last 40 days */
+  const past = (member: number, branch: number, n: number) => {
+    for (let i = 0; i < n; i++) visit(member, branch, now - (1 + Math.floor((i * 40) / Math.max(n, 1))) * 86400_000 - 4 * 3600_000, false);
+  };
+  // the two demo member accounts show their profiles and are in Downtown now
+  for (const id of [4, 5]) st.members.find((m) => m.member_id === id)!.is_public = true;
+  past(4, 1, 3); past(5, 1, 1);
+  visit(4, 1, now - 25 * 60_000, true);
+  visit(5, 1, now - 70 * 60_000, true);
+  CROWD.forEach(([n, s, pub, branch, count], i) => {
+    const id = ++st.seq.members;
+    st.members.push({ member_id: id, member_name: n, member_surname: s, phone_number: `+7700100${String(i + 1).padStart(4, "0")}`,
+      membership_status: "Active", membership_expiry: plusDays(180), role: "Member", trainer_id: null, preferred_language: "ru",
+      is_public: pub, pw_salt: "00".repeat(16), pw_hash: "" }); // empty hash: no password matches
+    past(id, branch || 1, count);
+    if (branch) visit(id, branch, now - (8 + i * 9) * 60_000, true);
+  });
 }
 
 /**
@@ -279,6 +323,7 @@ function validate(st: Store, entity: Entity, row: Row, id: number | null): strin
   switch (entity) {
     case "branches":
       if (!str(row.branch_name) || !str(row.address) || !str(row.phone_number)) return "required";
+      if (row.club_capacity !== undefined && row.club_capacity !== null && !(num(row.club_capacity) > 0)) return "invalid_value";
       if (others(st.branches).some((b) => b.phone_number === str(row.phone_number))) return "duplicate";
       return null;
     case "rooms": {
@@ -333,7 +378,8 @@ function validate(st: Store, entity: Entity, row: Row, id: number | null): strin
 
 function inUse(st: Store, entity: Entity, id: number): boolean {
   switch (entity) {
-    case "branches": return st.rooms.some((r) => r.branch_id === id) || st.sessions.some((s) => s.branch_id === id) || st.readers.some((r) => r.branch_id === id);
+    case "branches": return st.rooms.some((r) => r.branch_id === id) || st.sessions.some((s) => s.branch_id === id)
+      || st.readers.some((r) => r.branch_id === id) || st.visits.some((v) => v.branch_id === id);
     case "rooms": return st.sessions.some((s) => s.room_id === id);
     case "trainers": return st.sessions.some((s) => s.trainer_id === id) || st.members.some((m) => m.trainer_id === id);
     case "classes": return st.sessions.some((s) => s.class_id === id);
@@ -343,7 +389,7 @@ function inUse(st: Store, entity: Entity, id: number): boolean {
   }
 }
 
-const NUMERIC = new Set(["branch_id", "room_id", "trainer_id", "class_id", "max_capacity", "duration_min", "capacity", "cost", "stock", "extend_days"]);
+const NUMERIC = new Set(["branch_id", "room_id", "trainer_id", "class_id", "max_capacity", "duration_min", "capacity", "cost", "stock", "extend_days", "club_capacity"]);
 function coerce(row: Row): Row {
   const out: Row = {};
   for (const [k, v] of Object.entries(row)) {
@@ -486,6 +532,13 @@ function markBookedFromQueue(st: Store, memberId: number, sessionId: number, boo
   }
 }
 
+// ---------- right now in the club (same rules as migration_club_presence.sql) ----------
+/** Open = no "left" mark and less than VISIT_MAX_MS since arrival. */
+const visitOpen = (v: DVisit, now = Date.now()) => v.left_at === null && now - new Date(v.entered_at).getTime() < VISIT_MAX_MS;
+const effStatus = (m: MemberRow): Me["effective_status"] =>
+  m.membership_status === "Suspended" ? "Suspended" : m.membership_expiry < todayYmd() ? "Expired" : "Active";
+const visitsOf = (st: Store, memberId: number) => st.visits.filter((v) => v.member_id === memberId);
+
 // ---------- trainer class requests (same rules as migration_session_requests.sql) ----------
 const rangesOverlap = (a1: string, a2: string, b1: string, b2: string) =>
   new Date(a1) < new Date(b2) && new Date(b1) < new Date(a2);
@@ -515,10 +568,11 @@ export const demoApi: Api = {
     const st = await load();
     const m = me(st);
     if (!m) return null;
-    const eff: Me["effective_status"] = m.membership_status === "Suspended" ? "Suspended" : m.membership_expiry < todayYmd() ? "Expired" : "Active";
+    const eff = effStatus(m);
     return {
       member_id: m.member_id, member_name: m.member_name, member_surname: m.member_surname, membership_expiry: m.membership_expiry,
       phone_number: m.phone_number, role: m.role, trainer_id: m.trainer_id, preferred_language: m.preferred_language, effective_status: eff,
+      is_public: !!m.is_public,
     };
   },
 
@@ -1322,5 +1376,111 @@ export const demoApi: Api = {
     Object.assign(q, { status: "Approved", reviewed_at: nowIso(), session_id: sid });
     save(st);
     return ok("request_approved");
+  },
+
+  // ---------- right now in the club ----------
+  async clubNow(branchId) {
+    const st = await load();
+    const b = st.branches.find((x) => x.branch_id === branchId);
+    if (!b) return null;
+    const open = st.visits.filter((v) => v.branch_id === branchId && visitOpen(v))
+      .sort((a, c) => c.entered_at.localeCompare(a.entered_at));
+    const cap = b.club_capacity ?? DEFAULT_CLUB_CAPACITY;
+    // names only for logged-in users, and only of members who chose a public profile
+    const people: ClubPerson[] = !me(st) ? [] : open.flatMap((v) => {
+      const m = st.members.find((x) => x.member_id === v.member_id);
+      if (!m?.is_public) return [];
+      return [{ member_id: m.member_id, name: shortName(m.member_name, m.member_surname), initials: initialsOf(m.member_name, m.member_surname),
+        visits: visitsOf(st, m.member_id).length, entered_at: v.entered_at }];
+    });
+    return { branch_id: branchId, present: open.length, capacity: cap, load: clubLoad(open.length, cap), people, hidden: open.length - people.length };
+  },
+
+  async publicProfile(memberId) {
+    const st = await load();
+    if (!me(st)) return null;
+    const m = st.members.find((x) => x.member_id === memberId);
+    if (!m?.is_public) return null;
+    const visits = visitsOf(st, memberId);
+    const month = monthStartIso();
+    const attended = st.bookings.filter((b) => b.member_id === memberId && b.booking_status === "Attended")
+      .map((b) => st.classes.find((c) => c.class_id === st.sessions.find((x) => x.session_id === b.session_id)!.class_id)!.class_name);
+    const counts = new Map<string, number>();
+    attended.forEach((c) => counts.set(c, (counts.get(c) ?? 0) + 1));
+    const favourite = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? null;
+    const open = visits.find((v) => visitOpen(v));
+    const profile: PublicProfile = {
+      member_id: m.member_id, name: shortName(m.member_name, m.member_surname), initials: initialsOf(m.member_name, m.member_surname),
+      visits_total: visits.length, visits_month: visits.filter((v) => v.entered_at >= month).length,
+      first_visit: visits.map((v) => v.entered_at).sort()[0] ?? null,
+      classes_attended: attended.length, favourite_class: favourite,
+      in_club: open ? { branch_name: st.branches.find((b) => b.branch_id === open.branch_id)?.branch_name ?? "", entered_at: open.entered_at } : null,
+    };
+    return profile;
+  },
+
+  async setProfilePublic(isPublic) {
+    const st = await load();
+    const m = me(st);
+    if (!m) return no("not_signed_in");
+    m.is_public = isPublic;
+    save(st);
+    return ok(isPublic ? "profile_public_on" : "profile_public_off");
+  },
+
+  async staffFindMembers(q) {
+    const st = await load();
+    if (!isStaff(st)) return [];
+    const c = cleanQuery(q);
+    if (!c) return [];
+    const digits = c.replace(/\D/g, "");
+    return st.members
+      .filter((m) => (m.role === "Member" || m.role === "Trainer")
+        && (includes(`${m.member_name} ${m.member_surname}`, c) || (digits.length >= 3 && m.phone_number.includes(digits))))
+      .sort((a, b) => `${a.member_name} ${a.member_surname}`.localeCompare(`${b.member_name} ${b.member_surname}`))
+      .slice(0, 10)
+      .map<MemberLookup>((m) => ({ member_id: m.member_id, member_fullname: `${m.member_name} ${m.member_surname}`, phone_number: m.phone_number,
+        effective_status: effStatus(m), in_club_branch_id: visitsOf(st, m.member_id).find((v) => visitOpen(v))?.branch_id ?? null }));
+  },
+
+  async clubVisitsNow(branchId) {
+    const st = await load();
+    if (!isStaff(st)) return [];
+    return st.visits.filter((v) => v.branch_id === branchId && visitOpen(v))
+      .sort((a, b) => b.entered_at.localeCompare(a.entered_at))
+      .map<ClubVisit>((v) => {
+        const m = st.members.find((x) => x.member_id === v.member_id)!;
+        return { visit_id: v.visit_id, member_id: m.member_id, member_fullname: `${m.member_name} ${m.member_surname}`,
+          phone_number: m.phone_number, branch_id: v.branch_id, entered_at: v.entered_at, is_public: !!m.is_public };
+      });
+  },
+
+  async visitEnter(memberId, branchId) {
+    const st = await load();
+    if (!isStaff(st)) return no("staff_only");
+    if (!st.branches.some((b) => b.branch_id === branchId)) return no("branch_not_found");
+    const m = st.members.find((x) => x.member_id === memberId);
+    if (!m || (m.role !== "Member" && m.role !== "Trainer")) return no("member_not_found");
+    const eff = effStatus(m);
+    if (eff === "Suspended") return no("visit_membership_suspended");
+    if (eff === "Expired") return no("visit_membership_expired");
+    // a forgotten "left" mark: the old visit ends after VISIT_MAX_MS
+    for (const v of visitsOf(st, memberId)) {
+      if (v.left_at === null && !visitOpen(v)) v.left_at = new Date(new Date(v.entered_at).getTime() + VISIT_MAX_MS).toISOString();
+    }
+    if (visitsOf(st, memberId).some((v) => v.left_at === null)) return no("already_in_club");
+    st.visits.push({ visit_id: ++st.seq.visits, member_id: memberId, branch_id: branchId, entered_at: nowIso(), left_at: null, marked_by: st.current });
+    save(st);
+    return ok("visit_started");
+  },
+
+  async visitLeave(visitId) {
+    const st = await load();
+    if (!isStaff(st)) return no("staff_only");
+    const v = st.visits.find((x) => x.visit_id === visitId);
+    if (!v || !visitOpen(v)) return no("visit_not_open");
+    v.left_at = nowIso();
+    save(st);
+    return ok("visit_ended");
   },
 };

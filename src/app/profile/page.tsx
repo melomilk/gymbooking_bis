@@ -14,6 +14,7 @@ import { levelFor } from "@/lib/rewards";
 import { TrainerApplyForm } from "@/components/TrainerFields";
 import { attendanceRate, fmtRate } from "@/lib/stats";
 import { useSessionState } from "@/lib/useSessionState";
+import { PublicProfileToggle } from "@/components/ClubNow";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -150,6 +151,11 @@ export default function ProfilePage() {
         <div><dt>{t("expiry_date")}</dt><dd>{fmtDate(me.membership_expiry, lang)}</dd></div>
         {me.role !== "Member" && <div><dt>{t("role")}</dt><dd>{t(`role_${me.role}`)}</dd></div>}
       </dl>
+
+      {/* undefined = the club migration is not applied yet */}
+      {me.is_public !== undefined && (me.role === "Member" || me.role === "Trainer") && (
+        <PublicProfileToggle value={me.is_public} onResult={async (r) => { setToast({ ok: r.ok, text: tr(r) }); await refresh(); }} />
+      )}
 
       <TrainerApplicationBlock app={app} isMember={me.role === "Member"} error={appError} onSent={applicationSent} />
 

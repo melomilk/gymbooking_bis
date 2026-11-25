@@ -14,14 +14,15 @@ import type { AttendanceRow, BookingRow, Branch, ClassType, Entity, MemberRow, R
 import type { Key } from "@/lib/i18n";
 import { attendanceRate, fmtRate, LOW_ATTENDANCE } from "@/lib/stats";
 import { useSessionState } from "@/lib/useSessionState";
+import { StaffClubVisits } from "@/components/ClubNow";
 
 type Tab = "sessions" | "classes" | "trainers" | "branches" | "rooms" | "members" | "applications" | "checkin" | "noshows" | "report"
-  | "rewards" | "redemptions" | "reviews" | "sessionrequests";
+  | "rewards" | "redemptions" | "reviews" | "sessionrequests" | "club";
 const TABS: { id: Tab; label: Key }[] = [
   { id: "sessions", label: "tab_sessions" }, { id: "classes", label: "tab_classes" }, { id: "trainers", label: "tab_trainers" },
   { id: "branches", label: "tab_branches" }, { id: "rooms", label: "tab_rooms" }, { id: "members", label: "tab_members" },
   { id: "applications", label: "tab_applications" }, { id: "sessionrequests", label: "tab_session_requests" },
-  { id: "checkin", label: "tab_checkin" }, { id: "noshows", label: "tab_noshows" }, { id: "report", label: "tab_report" },
+  { id: "club", label: "tab_club" }, { id: "checkin", label: "tab_checkin" }, { id: "noshows", label: "tab_noshows" }, { id: "report", label: "tab_report" },
   { id: "rewards", label: "tab_rewards" }, { id: "redemptions", label: "tab_redemptions" }, { id: "reviews", label: "tab_reviews" },
 ];
 
@@ -175,21 +176,30 @@ export default function AdminPage() {
     ...crud("trainers"),
   };
 
+  const hasClubCapacity = data.branches.some((b) => b.club_capacity !== undefined);
   const branchesCfg: CrudConfig = {
     rows: data.branches as unknown as Row[], id: (r) => Number(r.branch_id),
     columns: [
       { label: "f_name", cell: (r) => <b>{s(r.branch_name)}</b> },
       { label: "f_address", cell: (r) => s(r.address) },
       { label: "f_phone", cell: (r) => s(r.phone_number) },
+      // club_capacity exists only after migration_club_presence.sql
+      ...(hasClubCapacity ? [{ label: "f_club_capacity" as Key, cell: (r: Row) => s(r.club_capacity) }] : []),
     ],
     fields: [
       { key: "branch_name", label: "f_name", type: "text", required: true },
       { key: "address", label: "f_address", type: "text", required: true },
       { key: "phone_number", label: "f_phone", type: "tel", required: true },
+      ...(hasClubCapacity ? [{ key: "club_capacity", label: "f_club_capacity" as Key, type: "number" as const, required: true }] : []),
     ],
-    blank: () => ({ branch_name: "", address: "", phone_number: "" }),
-    toForm: (r) => ({ branch_name: s(r.branch_name), address: s(r.address), phone_number: s(r.phone_number) }),
-    fromForm: (f) => ({ branch_name: f.branch_name.trim(), address: f.address.trim(), phone_number: f.phone_number.trim() }),
+    blank: () => ({ branch_name: "", address: "", phone_number: "", ...(hasClubCapacity ? { club_capacity: "60" } : {}) }),
+    toForm: (r) => ({ branch_name: s(r.branch_name), address: s(r.address), phone_number: s(r.phone_number),
+      ...(hasClubCapacity ? { club_capacity: s(r.club_capacity) } : {}) }),
+    fromForm: (f) => {
+      if (hasClubCapacity && !(Number(f.club_capacity) > 0)) return "invalid_value";
+      return { branch_name: f.branch_name.trim(), address: f.address.trim(), phone_number: f.phone_number.trim(),
+        ...(hasClubCapacity ? { club_capacity: Number(f.club_capacity) } : {}) };
+    },
     ...crud("branches"),
   };
 
@@ -260,7 +270,9 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {tab === "sessionrequests" ? (
+      {tab === "club" ? (
+        <StaffClubVisits onResult={(r) => setToast({ ok: r.ok, text: tr(r) })} />
+      ) : tab === "sessionrequests" ? (
         <AdminSessionRequests onResult={onResult} />
       ) : tab === "rewards" ? (
         <AdminRewards onResult={onResult} />
