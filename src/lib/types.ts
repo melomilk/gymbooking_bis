@@ -7,6 +7,7 @@ export type Result = {
   /** seconds, for `rate_limited` */ retry_after?: number;
   /** code to show at the front desk, for `redeemed` */ redemption_code?: string;
   /** place in the queue, for `waitlist_joined` */ position?: number;
+  /** new YYYY-MM-DD expiry date, for `membership_renewed` */ membership_expiry?: string;
 };
 /**
  * Answer to a password-reset request. IMITATION for the course project: no SMS is
@@ -111,6 +112,15 @@ export type AttendanceRow = {
 export type Reader = { reader_id: string; branch_id: number; branch_name: string; check_in_method: string };
 
 export type RegisterInput = { name: string; surname: string; phone: string; password: string; lang: Lang };
+
+// ---------- membership renewal ----------
+export type MembershipPlanMonths = 1 | 3 | 6;
+export type MembershipPlan = { months: MembershipPlanMonths; priceKzt: number; savePct?: number };
+export const MEMBERSHIP_PLANS: readonly MembershipPlan[] = [
+  { months: 1, priceKzt: 15000 },
+  { months: 3, priceKzt: 40000, savePct: 11 },
+  { months: 6, priceKzt: 72000, savePct: 20 },
+] as const;
 
 // ---------- trainer sign-up ----------
 export type ApplicationStatus = "Pending" | "Approved" | "Rejected";
@@ -269,6 +279,12 @@ export interface Api {
    * Codes: `cancelled`, `cancelled_fee_forfeited`, `not_cancellable`, `class_started`, `booking_not_found`.
    */
   cancel(bookingId: number, acceptFee?: boolean): Promise<Result>;
+  /**
+   * Renews the logged-in member's subscription (imitation online payment; updates status and expiry only).
+   * Codes: `membership_renewed` (+ `membership_expiry`), `invalid_plan`, `membership_suspended`,
+   * `staff_cannot_renew`, `not_signed_in`.
+   */
+  renewMembership(months: MembershipPlanMonths): Promise<Result>;
 
   // ---------- trainer ----------
   /** The trainer's own sessions with attendee names (FR-10). */

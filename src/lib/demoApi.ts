@@ -12,7 +12,7 @@ import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_B
 import { clubLoad, initialsOf, shortName } from "./club";
 import { almatyWeekStart, streakWeeks } from "./rewards";
 import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
-import { CHECKIN_OPENS_MS, FREE_CANCEL_MS } from "./format";
+import { CHECKIN_OPENS_MS, FREE_CANCEL_MS, nextMembershipExpiry } from "./format";
 
 const KEY = "gym-demo-v4"; // v4: club visits ("right now in the club") + public profiles
 const TZ_OFFSET_H = 5; // Asia/Almaty
@@ -1482,5 +1482,19 @@ export const demoApi: Api = {
     v.left_at = nowIso();
     save(st);
     return ok("visit_ended");
+  },
+
+  async renewMembership(months) {
+    const st = await load();
+    const m = me(st);
+    if (!m) return no("not_signed_in");
+    if (m.role === "Admin" || m.role === "Receptionist") return no("staff_cannot_renew");
+    if (m.membership_status === "Suspended") return no("membership_suspended");
+    if (months !== 1 && months !== 3 && months !== 6) return no("invalid_plan");
+    const expiry = nextMembershipExpiry(m.membership_expiry, months, todayYmd());
+    m.membership_status = "Active";
+    m.membership_expiry = expiry;
+    save(st);
+    return { ok: true, code: "membership_renewed", membership_expiry: expiry };
   },
 };

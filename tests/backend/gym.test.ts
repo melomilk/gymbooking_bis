@@ -551,4 +551,60 @@ describe("Right now in the club (public profiles and club load)", () => {
     await api.logout();
     expect(await api.setProfilePublic(true)).toMatchObject({ ok: false, code: "not_signed_in" });
   });
+
+  it("TC-37 membership renewal: active extends from current expiry, expired starts from today", async () => {
+    const { addMonthsYmd } = await import("../../src/lib/format");
+    expect(addMonthsYmd("2026-01-31", 1)).toBe("2026-02-28");
+    expect(addMonthsYmd("2028-01-31", 1)).toBe("2028-02-29"); // leap year
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-01-31T10:00:00+05:00"));
+
+    const m = await registerMember("+77019998877", "secret123");
+    const activeBefore = m.membership_expiry; // 2026-03-02 (today + 30d)
+    const rActive = await api.renewMembership(3);
+    expect(rActive).toMatchObject({ ok: true, code: "membership_renewed", membership_expiry: addMonthsYmd(activeBefore, 3) });
+    expect(await api.getMe()).toMatchObject({ effective_status: "Active", membership_expiry: addMonthsYmd(activeBefore, 3) });
+
+    // Expired membership: renewal starts from today (2026-01-31 + 1 month -> 2026-02-28)
+    await api.logout();
+    await loginAdmin();
+    expect(await api.adminUpdate("members", m.member_id, { membership_expiry: "2025-05-01" })).toMatchObject({ ok: true });
+    await api.logout();
+
+    expect(await api.login("+77019998877", "secret123")).toMatchObject({ ok: true });
+    expect((await api.getMe())?.effective_status).toBe("Expired");
+    const rExpired = await api.renewMembership(1);
+    expect(rExpired).toMatchObject({ ok: true, code: "membership_renewed", membership_expiry: "2026-02-28" });
+    expect(await api.getMe()).toMatchObject({ effective_status: "Active", membership_expiry: "2026-02-28" });
+
+    // 6-month plan on top of active expiry (2026-02-28 + 6 months -> 2026-08-28)
+    const rSix = await api.renewMembership(6);
+    expect(rSix).toMatchObject({ ok: true, code: "membership_renewed", membership_expiry: "2026-08-28" });
+  });
+
+  it("TC-38 membership renewal guards: logged out, staff, suspended and invalid plan", async () => {
+    expect(await api.renewMembership(1)).toMatchObject({ ok: false, code: "not_signed_in" });
+
+    await loginAdmin();
+    expect(await api.renewMembership(1)).toMatchObject({ ok: false, code: "staff_cannot_renew" });
+    await api.logout();
+
+    await loginReception();
+    expect(await api.renewMembership(3)).toMatchObject({ ok: false, code: "staff_cannot_renew" });
+    await api.logout();
+
+    const m = await registerMember("+77019998866", "secret123");
+    expect(await api.renewMembership(2 as 1)).toMatchObject({ ok: false, code: "invalid_plan" });
+
+    // Admin suspends member -> online renewal blocked, expiry stays intact
+    await api.logout();
+    await loginAdmin();
+    expect(await api.adminUpdate("members", m.member_id, { membership_status: "Suspended" })).toMatchObject({ ok: true });
+    await api.logout();
+
+    expect(await api.login("+77019998866", "secret123")).toMatchObject({ ok: true });
+    expect(await api.renewMembership(1)).toMatchObject({ ok: false, code: "membership_suspended" });
+    expect((await api.getMe())?.membership_expiry).toBe(m.membership_expiry);
+  });
 });

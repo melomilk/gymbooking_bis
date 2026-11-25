@@ -53,3 +53,27 @@ export function maskPhone(p: string): string {
 export const FREE_CANCEL_MS = 3 * 3600_000; // FR-06
 /** Check-in (NFC tap) opens this long before the class starts. */
 export const CHECKIN_OPENS_MS = 30 * 60_000;
+
+/** Adds calendar months to YYYY-MM-DD, clamping to month-end like PostgreSQL make_interval(months => n). */
+export function addMonthsYmd(ymd: string, months: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const total = y * 12 + (m - 1) + months;
+  const ny = Math.floor(total / 12);
+  const nm = total % 12;
+  const lastDay = new Date(Date.UTC(ny, nm + 1, 0)).getUTCDate();
+  const nd = Math.min(d, lastDay);
+  return `${String(ny).padStart(4, "0")}-${String(nm + 1).padStart(2, "0")}-${String(nd).padStart(2, "0")}`;
+}
+
+/** New expiry date: extends active membership from current expiry, or from today if expired/missing. */
+export function nextMembershipExpiry(
+  currentExpiry: string | null | undefined,
+  months: number,
+  today = dayKey(new Date().toISOString()),
+): string {
+  const base = currentExpiry && currentExpiry > today ? currentExpiry : today;
+  return addMonthsYmd(base, months);
+}
+
+/** Formats an amount in tenge, e.g. 15 000 ₸. */
+export const fmtKzt = (amount: number) => `${String(amount).replace(/\B(?=(\d{3})+(?!\d))/g, "\u00a0")}\u00a0₸`;

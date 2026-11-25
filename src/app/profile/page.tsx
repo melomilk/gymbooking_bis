@@ -15,6 +15,7 @@ import { TrainerApplyForm } from "@/components/TrainerFields";
 import { attendanceRate, fmtRate } from "@/lib/stats";
 import { useSessionState } from "@/lib/useSessionState";
 import { PublicProfileToggle } from "@/components/ClubNow";
+import RenewMembershipModal from "@/components/RenewMembershipModal";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -32,6 +33,7 @@ export default function ProfilePage() {
   const [reviews, setReviews] = useState<MyReview[]>([]);
   const [passes, setPasses] = useState<Redemption[]>([]);
   const [reviewing, setReviewing] = useState<BookingRow | null>(null);
+  const [renewOpen, setRenewOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!me) return;
@@ -152,6 +154,30 @@ export default function ProfilePage() {
         {me.role !== "Member" && <div><dt>{t("role")}</dt><dd>{t(`role_${me.role}`)}</dd></div>}
       </dl>
 
+      {(me.role === "Member" || me.role === "Trainer") && (
+        <div className={`renew-bar ${me.effective_status === "Expired" ? "expired" : ""}`} id="membership-renewal">
+          <div>
+            <b>
+              {me.effective_status === "Expired"
+                ? t("renew_expired_title")
+                : me.effective_status === "Suspended"
+                  ? t("renew_suspended_title")
+                  : t("renew_active_title")}
+            </b>
+            <p className="small muted">
+              {me.effective_status === "Expired"
+                ? t("renew_expired_hint")
+                : me.effective_status === "Suspended"
+                  ? t("renew_suspended_hint")
+                  : t("renew_active_hint", { date: fmtDate(me.membership_expiry, lang) })}
+            </p>
+          </div>
+          {me.effective_status !== "Suspended" && (
+            <button className="btn" onClick={() => setRenewOpen(true)}>{t("renew_btn")}</button>
+          )}
+        </div>
+      )}
+
       {/* undefined = the club migration is not applied yet */}
       {me.is_public !== undefined && (me.role === "Member" || me.role === "Trainer") && (
         <PublicProfileToggle value={me.is_public} onResult={async (r) => { setToast({ ok: r.ok, text: tr(r) }); await refresh(); }} />
@@ -221,6 +247,13 @@ export default function ProfilePage() {
         <ReviewModal booking={reviewing} existing={reviews.find((r) => r.booking_id === reviewing.booking_id)}
           onClose={() => setReviewing(null)}
           onSaved={(r) => { setReviewing(null); setToast({ ok: r.ok, text: tr(r) }); load(); }} />
+      )}
+      {renewOpen && (
+        <RenewMembershipModal
+          me={me}
+          onClose={() => setRenewOpen(false)}
+          onRenewed={async () => { await refresh(); await load(); }}
+        />
       )}
       <Toast msg={toast} onDone={() => setToast(null)} />
     </>

@@ -15,6 +15,7 @@ Automated tests for the application's business logic (the "backend" of this proj
 | 1. First run (20 tests) | 20 | 19 | 1 (TC-20, BUG-01) |
 | 2. After fixing BUG-01 (+ TC-21) | 21 | 21 | 0 |
 | 3. "Right now in the club" added (+ TC-33…TC-36), whole suite | 56 | 56 | 0 |
+| 4. Membership renewal added (+ TC-37…TC-38), whole suite | 58 | 58 | 0 |
 
 ## 3. Test cases
 
@@ -50,6 +51,13 @@ Automated tests for the application's business logic (the "backend" of this proj
 | TC-34 | Club presence | Member tries to mark a visit; reception: unknown branch, admin account, second arrival, search, "left" twice; suspended and expired member | `staff_only`, `branch_not_found`, `member_not_found`, `already_in_club`, found by name and phone, `visit_ended` then `visit_not_open`, `visit_membership_suspended`, `visit_membership_expired` | PASS |
 | TC-35 | Club load | `clubLoad()` / `loadSegments()` at the thresholds; seeded branches; time moved 3 h forward | 40 % → medium, 75 % → high; Downtown 12/30 medium, Riverside 2/40 low; after 3 h nobody counted and a new arrival is accepted | PASS |
 | TC-36 | Public profile | Read Aruzhan's profile logged out / logged in; new member private → public → private; toggle when logged out | `null` when logged out or private; visits 4, classes 10, favourite Yoga, in Downtown now; `profile_public_off`; `not_signed_in` | PASS |
+
+### Membership renewal (run 4)
+
+| ID | Area | Steps | Expected result | Result |
+|---|---|---|---|---|
+| TC-37 | Membership renewal | Active member renews for 3 months; admin expires membership; member renews for 1 month (month-end clamping) then 6 months | Active extends from current `membership_expiry`; expired starts from today (`2026-01-31` + 1 mo → `2026-02-28`, leap year `2028-02-29`) and restores `effective_status = Active` | PASS |
+| TC-38 | Membership renewal guards | Call `renewMembership` while logged out, as Admin, as Receptionist, with invalid plan (`2`), and as Suspended member | `not_signed_in`, `staff_cannot_renew`, `invalid_plan`, `membership_suspended` (expiry unchanged) | PASS |
 
 SQL (`migration_club_presence.sql`) was applied to PostgreSQL 16 with a stub of the Supabase `auth` schema on top of `schema.sql` and checked by hand: all result codes above, public/private names in `club_now()` for a member and for a logged-out user, `public_profile()` of a private member is `null`, a visit older than 3 h stops counting and is closed on the next arrival. RLS and grants in a real Supabase project were not executed.
 

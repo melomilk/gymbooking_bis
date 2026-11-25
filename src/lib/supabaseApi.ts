@@ -200,6 +200,7 @@ export const supabaseApi: Api = {
 
   book: (sessionId) => rpc("book_session", { p_session_id: sessionId }),
   cancel: (bookingId, acceptFee = false) => rpc("cancel_booking", { p_booking_id: bookingId, p_accept_fee: acceptFee }),
+  renewMembership: (months) => rpc("renew_membership", { p_months: months }),
 
   async trainerRoster() {
     await markNoShows();
