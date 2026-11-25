@@ -442,3 +442,113 @@ describe("Manual test table, cases 16-17", () => {
     expect(await api.updateTrainerApplication(input, [], [pdf("x.pdf")])).toMatchObject({ ok: false, code: "application_not_pending" });
   });
 });
+
+describe("Right now in the club (public profiles and club load)", () => {
+  afterEach(() => vi.useRealTimers());
+  const RECEPTION = { phone: "+77000000003", password: "reception123" };
+  const RIVERSIDE = 2; // seed: capacity 40, two people in the club
+  const loginReception = async () => expect(await api.login(RECEPTION.phone, RECEPTION.password)).toMatchObject({ ok: true });
+
+  it("TC-33 front desk marks arrival: counted for everyone, names only of public profiles and only when logged in", async () => {
+    const m = await registerMember("+77011112233", "secret123");
+    await api.logout();
+    const before = (await api.clubNow(RIVERSIDE))!;
+    expect(before.people).toEqual([]); // logged out: no names
+    expect(before.hidden).toBe(before.present);
+
+    await loginReception();
+    expect(await api.visitEnter(m.member_id, RIVERSIDE)).toMatchObject({ ok: true, code: "visit_started" });
+    expect((await api.clubVisitsNow(RIVERSIDE)).some((v) => v.member_id === m.member_id)).toBe(true);
+    await api.logout();
+
+    // private by default: counted but not shown
+    await api.login("+77011112233", "secret123");
+    let now = (await api.clubNow(RIVERSIDE))!;
+    expect(now.present).toBe(before.present + 1);
+    expect(now.people.some((p) => p.member_id === m.member_id)).toBe(false);
+    expect(now.people.length + now.hidden).toBe(now.present);
+
+    expect(await api.setProfilePublic(true)).toMatchObject({ ok: true, code: "profile_public_on" });
+    expect((await api.getMe())?.is_public).toBe(true);
+    now = (await api.clubNow(RIVERSIDE))!;
+    const me = now.people.find((p) => p.member_id === m.member_id);
+    expect(me).toMatchObject({ name: "Test U.", initials: "TU", visits: 1 });
+  });
+
+  it("TC-34 visit rules: staff only, one open visit per member, membership must be valid, 'left' ends the visit", async () => {
+    const m = await registerMember("+77011112233", "secret123");
+    expect(await api.visitEnter(m.member_id, RIVERSIDE)).toMatchObject({ ok: false, code: "staff_only" });
+    await api.logout();
+
+    await loginReception();
+    expect(await api.visitEnter(m.member_id, 99)).toMatchObject({ ok: false, code: "branch_not_found" });
+    expect(await api.visitEnter(1, RIVERSIDE)).toMatchObject({ ok: false, code: "member_not_found" }); // the admin account
+    expect(await api.visitEnter(m.member_id, RIVERSIDE)).toMatchObject({ ok: true, code: "visit_started" });
+    expect(await api.visitEnter(m.member_id, 1)).toMatchObject({ ok: false, code: "already_in_club" }); // not in two clubs
+    expect((await api.staffFindMembers("Test User"))[0]).toMatchObject({ member_id: m.member_id, in_club_branch_id: RIVERSIDE });
+    expect((await api.staffFindMembers("1112233"))[0]?.member_id).toBe(m.member_id); // by phone
+
+    const visit = (await api.clubVisitsNow(RIVERSIDE)).find((v) => v.member_id === m.member_id)!;
+    expect(await api.visitLeave(visit.visit_id)).toMatchObject({ ok: true, code: "visit_ended" });
+    expect(await api.visitLeave(visit.visit_id)).toMatchObject({ ok: false, code: "visit_not_open" });
+    expect((await api.clubVisitsNow(RIVERSIDE)).some((v) => v.member_id === m.member_id)).toBe(false);
+    await api.logout();
+
+    // suspended / expired membership: not let in
+    await loginAdmin();
+    expect(await api.adminUpdate("members", m.member_id, { membership_status: "Suspended" })).toMatchObject({ ok: true });
+    await api.logout();
+    await loginReception();
+    expect(await api.visitEnter(m.member_id, RIVERSIDE)).toMatchObject({ ok: false, code: "visit_membership_suspended" });
+    await api.logout();
+    await loginAdmin();
+    await api.adminUpdate("members", m.member_id, { membership_status: "Active", membership_expiry: "2020-01-01" });
+    await api.logout();
+    await loginReception();
+    expect(await api.visitEnter(m.member_id, RIVERSIDE)).toMatchObject({ ok: false, code: "visit_membership_expired" });
+  });
+
+  it("TC-35 load level from the branch capacity; a visit without 'left' stops counting after 3 hours", async () => {
+    const { clubLoad, loadSegments } = await import("../../src/lib/club");
+    expect(clubLoad(11, 30)).toBe("low");     // 37 %
+    expect(clubLoad(12, 30)).toBe("medium");  // 40 %
+    expect(clubLoad(22, 30)).toBe("medium");  // 73 %
+    expect(clubLoad(23, 30)).toBe("high");    // 77 %
+    expect(clubLoad(50, 30)).toBe("high");
+    expect(loadSegments(0, 30)).toBe(0);
+    expect(loadSegments(1, 60)).toBe(1);      // someone is there: at least one segment
+    expect(loadSegments(99, 30)).toBe(10);
+
+    // the seed: Downtown 12 of 30 -> medium, Riverside 2 of 40 -> low
+    expect(await api.clubNow(1)).toMatchObject({ present: 12, capacity: 30, load: "medium" });
+    expect(await api.clubNow(RIVERSIDE)).toMatchObject({ present: 2, capacity: 40, load: "low" });
+
+    const m = await registerMember("+77011112233", "secret123");
+    await api.logout();
+    await loginReception();
+    expect(await api.visitEnter(m.member_id, RIVERSIDE)).toMatchObject({ ok: true });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 3 * H + 60_000);
+    // everyone seeded and our member forgot to sign out -> nobody counts any more
+    expect(await api.clubNow(RIVERSIDE)).toMatchObject({ present: 0, load: "low" });
+    expect(await api.visitEnter(m.member_id, 1)).toMatchObject({ ok: true, code: "visit_started" }); // old visit closed itself
+  });
+
+  it("TC-36 public profile: hidden while private, shows visits and classes when public", async () => {
+    // Aruzhan (member 4) is public in the seed: 3 past visits + one now, 10 attended classes
+    expect(await api.publicProfile(4)).toBeNull(); // logged out
+    const m = await registerMember("+77011112233", "secret123");
+    const aruzhan = (await api.publicProfile(4))!;
+    expect(aruzhan).toMatchObject({ name: "Aruzhan B.", visits_total: 4, classes_attended: 10, favourite_class: "Yoga" });
+    expect(aruzhan.in_club?.branch_name).toBe("Downtown");
+
+    // a new member is private until they switch it on
+    expect(await api.publicProfile(m.member_id)).toBeNull();
+    await api.setProfilePublic(true);
+    expect(await api.publicProfile(m.member_id)).toMatchObject({ visits_total: 0, classes_attended: 0, favourite_class: null, in_club: null });
+    expect(await api.setProfilePublic(false)).toMatchObject({ ok: true, code: "profile_public_off" });
+    expect(await api.publicProfile(m.member_id)).toBeNull();
+    await api.logout();
+    expect(await api.setProfilePublic(true)).toMatchObject({ ok: false, code: "not_signed_in" });
+  });
+});

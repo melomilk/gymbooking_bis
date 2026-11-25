@@ -14,6 +14,7 @@ Automated tests for the application's business logic (the "backend" of this proj
 |---|---|---|---|
 | 1. First run (20 tests) | 20 | 19 | 1 (TC-20, BUG-01) |
 | 2. After fixing BUG-01 (+ TC-21) | 21 | 21 | 0 |
+| 3. "Right now in the club" added (+ TC-33…TC-36), whole suite | 56 | 56 | 0 |
 
 ## 3. Test cases
 
@@ -40,6 +41,17 @@ Automated tests for the application's business logic (the "backend" of this proj
 | TC-19 | Check-in | Check in with reader of the wrong branch, then correct reader, then again | `wrong_branch_reader`; `checked_in` (status `Attended`); `already_checked_in` | PASS | PASS |
 | TC-20 | Roles | Admin gives a member the `Receptionist` role | `updated` | FAIL | PASS |
 | TC-21 | Roles | Receptionist lists bookings and readers, checks a booking in; then tries admin actions | Front-desk functions work; `adminInsert` = `forbidden`, `adminList`/`attendanceReport` empty | - | PASS |
+
+### "Right now in the club" (run 3)
+
+| ID | Area | Steps | Expected result | Result |
+|---|---|---|---|---|
+| TC-33 | Club presence | Reception marks a new member as arrived; the member checks the widget, then makes the profile public | `visit_started`; counted in `present`; private → not in `people`; logged out → no names; after `profile_public_on` shown as `Test U.` / `TU` / 1 visit | PASS |
+| TC-34 | Club presence | Member tries to mark a visit; reception: unknown branch, admin account, second arrival, search, "left" twice; suspended and expired member | `staff_only`, `branch_not_found`, `member_not_found`, `already_in_club`, found by name and phone, `visit_ended` then `visit_not_open`, `visit_membership_suspended`, `visit_membership_expired` | PASS |
+| TC-35 | Club load | `clubLoad()` / `loadSegments()` at the thresholds; seeded branches; time moved 3 h forward | 40 % → medium, 75 % → high; Downtown 12/30 medium, Riverside 2/40 low; after 3 h nobody counted and a new arrival is accepted | PASS |
+| TC-36 | Public profile | Read Aruzhan's profile logged out / logged in; new member private → public → private; toggle when logged out | `null` when logged out or private; visits 4, classes 10, favourite Yoga, in Downtown now; `profile_public_off`; `not_signed_in` | PASS |
+
+SQL (`migration_club_presence.sql`) was applied to PostgreSQL 16 with a stub of the Supabase `auth` schema on top of `schema.sql` and checked by hand: all result codes above, public/private names in `club_now()` for a member and for a logged-out user, `public_profile()` of a private member is `null`, a visit older than 3 h stops counting and is closed on the next arrival. RLS and grants in a real Supabase project were not executed.
 
 ## 4. Coverage after the fix (files under test)
 

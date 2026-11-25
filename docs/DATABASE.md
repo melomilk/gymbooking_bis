@@ -292,3 +292,20 @@ Certificates live in the private Storage bucket `trainer-certificates` (5 MB, PD
   (`class_sessions` constraints still apply; their errors become result codes); reject stores the reason.
 - Views: `v_session_requests` (trainer: own; admin: all), `v_class_types` and `v_rooms` (read-only lists for the
   form, since `classes` and `rooms` are admin-only tables).
+
+## Right now in the club (`migration_club_presence.sql`)
+
+- `members.is_public` (default `false`): the member appears in "Right now in the club" and others can open the profile.
+- `branches.club_capacity` (default 60): comfortable number of people in the gym; the load is counted from it.
+- `club_visits` — member, branch, `entered_at`, `left_at`, `marked_by` (staff member). One open visit per member
+  (partial unique index). A visit is open while `left_at is null` and it started less than 3 hours ago (`visit_is_open()`).
+- `club_load(present, capacity)`: below 40 % `low`, below 75 % `medium`, otherwise `high` (same as `src/lib/club.ts`).
+- `club_now(branch)` (anon + authenticated): `present`, `capacity`, `load`, `hidden`; `people` (public members:
+  first name + surname initial, initials, number of visits) only for logged-in users.
+- `public_profile(member)`: logged-in only, `null` for a private profile; visits (total / this month / first),
+  attended classes, favourite class, where the member is now.
+- `set_profile_public(bool)`: own profile. `v_me` gets an `is_public` column.
+- Front desk (`is_staff()`): `staff_find_members(q)` (name or phone, max 10), `club_visits_now(branch)`,
+  `visit_enter(member, branch)` (closes a forgotten visit older than 3 h; refuses suspended / expired memberships and
+  staff accounts), `visit_leave(visit)`.
+- `club_visits` has RLS on and no grants: it is read and written only through these functions.

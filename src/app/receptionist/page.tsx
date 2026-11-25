@@ -7,6 +7,7 @@ import { CHECKIN_OPENS_MS, fmtDayShort, fmtTime } from "@/lib/format";
 import type { BookingRow, Reader, Result } from "@/lib/types";
 import { useSessionState } from "@/lib/useSessionState";
 import { StaffRedemptions } from "@/components/Rewards";
+import { StaffClubVisits } from "@/components/ClubNow";
 
 export default function ReceptionistPage() {
   const { allowed } = useRequireRole(["Receptionist", "Admin"]); // FR-10
@@ -17,7 +18,7 @@ export default function ReceptionistPage() {
   const [readerId, setReaderId] = useSessionState("reception.reader", "");
   const [filter, setFilter] = useSessionState("reception.filter", "");
   const [toast, setToast] = useState<ToastMsg>(null);
-  const [tab, setTab] = useSessionState<"checkin" | "rewards">("reception.tab", "checkin");
+  const [tab, setTab] = useSessionState<"club" | "checkin" | "rewards">("reception.tab", "checkin");
 
   const load = useCallback(async () => {
     const [b, r] = await Promise.all([api.allBookings(), api.listReaders()]);
@@ -55,10 +56,12 @@ export default function ReceptionistPage() {
     <>
       <h1>{t("receptionist_title")}</h1>
       <div className="tabs" role="tablist">
+        <button role="tab" aria-selected={tab === "club"} className={tab === "club" ? "active" : ""} onClick={() => setTab("club")}>{t("tab_club")}</button>
         <button role="tab" aria-selected={tab === "checkin"} className={tab === "checkin" ? "active" : ""} onClick={() => setTab("checkin")}>{t("tab_checkin")}</button>
         <button role="tab" aria-selected={tab === "rewards"} className={tab === "rewards" ? "active" : ""} onClick={() => setTab("rewards")}>{t("tab_redemptions")}</button>
       </div>
-      {tab === "rewards" ? <StaffRedemptions onResult={(r) => setToast({ ok: r.ok, text: tr(r) })} /> : <>
+      {tab === "club" ? <StaffClubVisits onResult={(r) => setToast({ ok: r.ok, text: tr(r) })} />
+        : tab === "rewards" ? <StaffRedemptions onResult={(r) => setToast({ ok: r.ok, text: tr(r) })} /> : <>
       <p className="muted small">{t("checkin_desc")}</p>
       <p className="muted small">{t("manual_desc")}</p>
 

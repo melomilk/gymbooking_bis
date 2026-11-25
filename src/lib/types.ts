@@ -15,14 +15,15 @@ export type Result = {
  */
 export type ResetRequest = Result & { sms_code?: string; token?: string };
 
-export type Branch = { branch_id: number; branch_name: string; address: string; phone_number: string };
+export type Branch = { branch_id: number; branch_name: string; address: string; phone_number: string;
+  /** how many people fit in the gym at once; the club load is counted from it */ club_capacity?: number };
 export type Room = { room_id: number; branch_id: number; room_name: string; max_capacity: number };
 export type Trainer = { trainer_id: number; trainer_name: string; phone?: string | null; email?: string | null };
 export type ClassType = { class_id: number; class_name: string; description: string | null; duration_min: number };
 export type MemberRow = {
   member_id: number; member_name: string; member_surname: string; phone_number: string;
   membership_status: "Active" | "Suspended"; membership_expiry: string; role: Role;
-  trainer_id: number | null; preferred_language: Lang;
+  trainer_id: number | null; preferred_language: Lang; is_public?: boolean;
 };
 
 export type SessionRow = {
@@ -55,6 +56,8 @@ export type Me = {
   trainer_id: number | null;
   preferred_language: Lang;
   effective_status: "Active" | "Expired" | "Suspended";
+  /** other members can see this person in "Right now in the club" (undefined without the migration) */
+  is_public?: boolean;
 };
 
 export type BookingRow = {
@@ -194,6 +197,26 @@ export type Review = {
   review_id: number; rating: number; comment: string | null; created_at: string; updated_at: string;
   trainer_id: number; trainer_name: string; class_name: string; start_time: string; member_fullname: string | null;
 };
+// ---------- who is in the club now (migration_club_presence.sql) ----------
+/** An open visit counts as finished after this long (people forget to sign out at the desk). */
+export const VISIT_MAX_MS = 3 * 3600_000;
+export const DEFAULT_CLUB_CAPACITY = 60;
+export type ClubLoad = "low" | "medium" | "high";
+/** A public member who is in the club now. `visits` = all their visits. */
+export type ClubPerson = { member_id: number; name: string; initials: string; visits: number; entered_at: string };
+/** `people` = public members only (empty when logged out); `hidden` = the others. */
+export type ClubNow = { branch_id: number; present: number; capacity: number; load: ClubLoad; people: ClubPerson[]; hidden: number };
+export type PublicProfile = {
+  member_id: number; name: string; initials: string; visits_total: number; visits_month: number;
+  first_visit: string | null; classes_attended: number; favourite_class: string | null;
+  in_club: { branch_name: string; entered_at: string } | null;
+};
+/** Front desk: someone who is in the club now. */
+export type ClubVisit = { visit_id: number; member_id: number; member_fullname: string; phone_number: string;
+  branch_id: number; entered_at: string; is_public: boolean };
+/** Front desk: member search result for "arrived". */
+export type MemberLookup = { member_id: number; member_fullname: string; phone_number: string;
+  effective_status: Me["effective_status"]; in_club_branch_id: number | null };
 export type Row = Record<string, unknown>;
 
 /**
@@ -400,4 +423,25 @@ export interface Api {
    * `request_not_pending`, `request_expired`, `room_overlap`, `trainer_overlap`, `capacity_exceeds_room`, `admin_only`.
    */
   reviewSessionRequest(requestId: number, approve: boolean, reason?: string): Promise<Result>;
+
+  // ---------- right now in the club (migration_club_presence.sql) ----------
+  // Without the migration these return null / empty data, so the site keeps working.
+  /** People in the branch now, the load level and the public members among them. `null` if unavailable. */
+  clubNow(branchId: number): Promise<ClubNow | null>;
+  /** Another member's profile; `null` if it is private or the caller is logged out. */
+  publicProfile(memberId: number): Promise<PublicProfile | null>;
+  /** Codes: `profile_public_on`, `profile_public_off`, `not_signed_in`. */
+  setProfilePublic(isPublic: boolean): Promise<Result>;
+  /** Front desk: members by name or phone (max 10). */
+  staffFindMembers(q: string): Promise<MemberLookup[]>;
+  /** Front desk: who is in the branch now, newest first. */
+  clubVisitsNow(branchId: number): Promise<ClubVisit[]>;
+  /**
+   * Front desk marks that a member came into the club.
+   * Codes: `visit_started`, `already_in_club`, `member_not_found`, `branch_not_found`,
+   * `visit_membership_expired`, `visit_membership_suspended`, `staff_only`.
+   */
+  visitEnter(memberId: number, branchId: number): Promise<Result>;
+  /** Front desk marks that the member left. Codes: `visit_ended`, `visit_not_open`, `staff_only`. */
+  visitLeave(visitId: number): Promise<Result>;
 }

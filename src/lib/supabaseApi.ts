@@ -2,7 +2,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import type {
   Api, AttendanceRow, BookingRow, CertificateFile, Entity, Leaderboard, MyReview, PointsEntry, PointsSummary, Redemption,
   ResetRequest, Result, Review, Reward, Row, SessionRow, TrainerApplication, TrainerRating, WaitlistEntry,
-  ClassTypeOption, RoomOption, SessionRequest,
+  ClassTypeOption, RoomOption, SessionRequest, ClubNow, ClubVisit, MemberLookup, PublicProfile,
 } from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES } from "./types";
 import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
@@ -444,4 +444,32 @@ export const supabaseApi: Api = {
   withdrawSessionRequest: (id) => rpc("withdraw_session_request", { p_request_id: id }),
   reviewSessionRequest: (id, approve, reason) =>
     rpc("review_session_request", { p_request_id: id, p_approve: approve, p_reason: reason ?? null }),
+
+  // ---------- right now in the club (migration_club_presence.sql) ----------
+  async clubNow(branchId) {
+    const { data, error } = await sb().rpc("club_now", { p_branch_id: branchId });
+    return error || !data ? null : (data as ClubNow);
+  },
+
+  async publicProfile(memberId) {
+    const { data, error } = await sb().rpc("public_profile", { p_member_id: memberId });
+    return error || !data ? null : (data as PublicProfile);
+  },
+
+  setProfilePublic: (isPublic) => rpc("set_profile_public", { p_public: isPublic }),
+
+  async staffFindMembers(q) {
+    const c = cleanQuery(q);
+    if (!c) return [];
+    const { data, error } = await sb().rpc("staff_find_members", { p_q: c });
+    return error || !data ? [] : (data as MemberLookup[]);
+  },
+
+  async clubVisitsNow(branchId) {
+    const { data, error } = await sb().rpc("club_visits_now", { p_branch_id: branchId });
+    return error || !data ? [] : (data as ClubVisit[]);
+  },
+
+  visitEnter: (memberId, branchId) => rpc("visit_enter", { p_member_id: memberId, p_branch_id: branchId }),
+  visitLeave: (visitId) => rpc("visit_leave", { p_visit_id: visitId }),
 };
