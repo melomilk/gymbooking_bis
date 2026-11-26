@@ -4,11 +4,12 @@
 import type {
   Api, AttendanceRow, CertificateFile, TrainerApplication, Branch, BookingRow, ClassType, Entity, Me, MemberRow, Reader, Result, Room, RosterRow, Row, SessionRow, Trainer,
   Leaderboard, MyReview, PointsEntry, PointsSummary, Redemption, Review, Reward, TrainerRating, WaitlistEntry, SessionRequest,
-  ClubPerson, ClubVisit, MemberLookup, PublicProfile,
+  ClubPerson, ClubVisit, MemberLookup, PublicProfile, BuddyInvite,
 } from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES,
   POINTS, REVIEW_MAX_CHARS, REVIEW_WINDOW_DAYS, REWARD_KINDS, WAITLIST_CLOSES_MS, WAITLIST_MAX,
-  REQUEST_MAX_DAYS, REQUEST_MAX_PENDING, REQUEST_MIN_AHEAD_MS, REQUEST_NOTE_MAX, DEFAULT_CLUB_CAPACITY, VISIT_MAX_MS } from "./types";
+  REQUEST_MAX_DAYS, REQUEST_MAX_PENDING, REQUEST_MIN_AHEAD_MS, REQUEST_NOTE_MAX, DEFAULT_CLUB_CAPACITY, VISIT_MAX_MS,
+  BUDDY_HOLD_MS, BUDDY_MAX_PENDING } from "./types";
 import { clubLoad, initialsOf, shortName } from "./club";
 import { almatyWeekStart, streakWeeks } from "./rewards";
 import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, validName } from "./validate";
@@ -48,7 +49,12 @@ type Extra = {
   sessionRequests: DRequest[];
   /** who came into the club and when (migration_club_presence.sql) */
   visits: DVisit[];
+  /** "going with a friend" invitations (migration_buddy_invite.sql) */
+  buddyInvites: DBuddy[];
 };
+type DBuddy = { invite_id: number; inviter_id: number; inviter_booking_id: number; session_id: number; friend_phone: string;
+  friend_member_id: number | null; friend_booking_id: number | null; status: BuddyInvite["status"];
+  created_at: string; expires_at: string; responded_at: string | null; bonus_at: string | null };
 type DVisit = { visit_id: number; member_id: number; branch_id: number; entered_at: string; left_at: string | null; marked_by: number | null };
 type DRequest = { request_id: number; trainer_id: number; class_id: number; branch_id: number; room_id: number;
   start_time: string; end_time: string; capacity: number; note: string | null; status: SessionRequest["status"];
@@ -75,10 +81,10 @@ const STARTER_REWARDS: Omit<Reward, "reward_id">[] = [
 /** Stores saved by an older version lack the new lists. */
 function normalize(st: Store): Store {
   st.rewards ??= STARTER_REWARDS.map((r, i) => ({ ...r, reward_id: i + 1 }));
-  st.redemptions ??= []; st.waitlist ??= []; st.reviews ??= []; st.reviewPoints ??= {}; st.sessionRequests ??= []; st.visits ??= [];
+  st.redemptions ??= []; st.waitlist ??= []; st.reviews ??= []; st.reviewPoints ??= {}; st.sessionRequests ??= []; st.visits ??= []; st.buddyInvites ??= [];
   for (const b of st.branches) b.club_capacity ??= DEFAULT_CLUB_CAPACITY;
   st.seq.rewards ??= st.rewards.reduce((m, r) => Math.max(m, r.reward_id), 0);
-  for (const k of ["redemptions", "waitlist", "reviews", "sessionRequests", "visits"]) st.seq[k] ??= 0;
+  for (const k of ["redemptions", "waitlist", "reviews", "sessionRequests", "visits", "buddyInvites"]) st.seq[k] ??= 0;
   return st;
 }
 
@@ -259,7 +265,8 @@ async function load(): Promise<Store> {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const st = normalize(JSON.parse(raw) as Store);
-      if (markNoShows(st)) save(st);
+      const noShows = markNoShows(st);
+      if (expireBuddyInvites(st) || noShows) save(st);
       return st;
     }
   } catch { /* storage unavailable */ }
@@ -279,6 +286,11 @@ const isAdmin = (st: Store) => me(st)?.role === "Admin";
 const isStaff = (st: Store) => me(st)?.role === "Admin" || me(st)?.role === "Receptionist";
 const taken = (st: Store, sessionId: number) =>
   st.bookings.filter((b) => b.session_id === sessionId && b.booking_status !== "Cancelled").length;
+/** Pending invitations hold a place until expires_at (time decides, like buddy_held_places()). */
+const holdActive = (i: DBuddy) => i.status === "Pending" && new Date(i.expires_at).getTime() > Date.now();
+const held = (st: Store, sessionId: number) => st.buddyInvites.filter((i) => i.session_id === sessionId && holdActive(i)).length;
+/** Places that are not free: bookings + places held for invited friends. */
+const placesTaken = (st: Store, sessionId: number) => taken(st, sessionId) + held(st, sessionId);
 
 function vSession(st: Store, s: DSession): SessionRow {
   const c = st.classes.find((x) => x.class_id === s.class_id)!;
@@ -287,7 +299,7 @@ function vSession(st: Store, s: DSession): SessionRow {
     trainer_id: s.trainer_id, trainer_name: st.trainers.find((x) => x.trainer_id === s.trainer_id)!.trainer_name,
     branch_id: s.branch_id, branch_name: st.branches.find((x) => x.branch_id === s.branch_id)!.branch_name,
     room_id: s.room_id, room_name: st.rooms.find((x) => x.room_id === s.room_id)!.room_name,
-    start_time: s.start_time, end_time: s.end_time, capacity: s.capacity, spots_taken: taken(st, s.session_id),
+    start_time: s.start_time, end_time: s.end_time, capacity: s.capacity, spots_taken: placesTaken(st, s.session_id),
     cancelled_at: s.cancelled_at ?? null,
   };
 }
@@ -439,6 +451,8 @@ function ledgerFor(st: Store, memberId: number): PointsEntry[] {
       add(POINTS.no_show, "no_show", ses.end_time, cls);
       add(-POINTS.no_show, "no_show_reversed", b.excused_at, cls);
     }
+    const buddy = st.buddyInvites.find((i) => i.bonus_at && (i.inviter_booking_id === b.booking_id || i.friend_booking_id === b.booking_id));
+    if (buddy) add(POINTS.buddy_bonus, "buddy_bonus", buddy.bonus_at!, cls);
     const rp = st.reviewPoints[b.booking_id];
     if (rp) {
       add(POINTS.review, "review", rp.given, cls);
@@ -473,7 +487,7 @@ function summaryFor(st: Store, memberId: number): PointsSummary {
     .map((b) => st.sessions.find((x) => x.session_id === b.session_id)!.start_time);
   return {
     balance: sum(() => true),
-    lifetime: sum((e) => e.reason === "attended" || e.reason === "streak_bonus" || e.reason === "review"),
+    lifetime: sum((e) => e.reason === "attended" || e.reason === "streak_bonus" || e.reason === "review" || e.reason === "buddy_bonus"),
     month_points: sum((e) => e.created_at >= month && e.reason !== "redeem" && e.reason !== "redeem_refund"),
     streak: streakWeeks(attended),
     streak_bonuses: l.filter((e) => e.reason === "streak_bonus").length,
@@ -499,7 +513,7 @@ function promoteWaitlist(st: Store, sessionId: number) {
     return;
   }
   if (new Date(s.start_time).getTime() - Date.now() < WAITLIST_CLOSES_MS) return;
-  while (taken(st, sessionId) < s.capacity) {
+  while (placesTaken(st, sessionId) < s.capacity) {
     const w = waiting()[0];
     if (!w) return;
     const m = st.members.find((x) => x.member_id === w.member_id)!;
@@ -559,6 +573,73 @@ function vRequest(st: Store, q: DRequest): SessionRequest {
   return { ...q, trainer_name: st.trainers.find((x) => x.trainer_id === q.trainer_id)?.trainer_name ?? "",
     class_name: c.class_name, duration_min: c.duration_min, branch_name: st.branches.find((b) => b.branch_id === q.branch_id)?.branch_name ?? "",
     room_name: r.room_name, max_capacity: r.max_capacity };
+}
+
+// ---------- going with a friend (same rules as migration_buddy_invite.sql) ----------
+/** Holds that ran out are marked Expired and their place goes to the waitlist (expire_buddy_invites()). */
+function expireBuddyInvites(st: Store): boolean {
+  const ended = st.buddyInvites.filter((i) => i.status === "Pending" && !holdActive(i));
+  for (const i of ended) i.status = "Expired";
+  for (const sid of new Set(ended.map((i) => i.session_id))) promoteWaitlist(st, sid);
+  return ended.length > 0;
+}
+
+/** The inviter's booking was cancelled: the place held for the friend is released (trg_buddy_on_booking_cancel). */
+function releaseHoldsOf(st: Store, bookingId: number) {
+  for (const i of st.buddyInvites) {
+    if (i.inviter_booking_id === bookingId && i.status === "Pending") Object.assign(i, { status: "Cancelled", responded_at: nowIso() });
+  }
+}
+
+/** Both bookings Attended -> +15 for each, once (trg_buddy_on_attended). The ledger reads bonus_at. */
+function buddyBonus(st: Store, bookingId: number) {
+  const attended = (id: number | null) => st.bookings.some((b) => b.booking_id === id && b.booking_status === "Attended");
+  for (const i of st.buddyInvites) {
+    if (i.status === "Accepted" && !i.bonus_at && i.friend_booking_id !== null
+      && (i.inviter_booking_id === bookingId || i.friend_booking_id === bookingId)
+      && attended(i.inviter_booking_id) && attended(i.friend_booking_id)) i.bonus_at = nowIso();
+  }
+}
+
+function vBuddy(st: Store, i: DBuddy, mine: boolean): BuddyInvite {
+  const v = vSession(st, st.sessions.find((x) => x.session_id === i.session_id)!);
+  const inviter = st.members.find((x) => x.member_id === i.inviter_id)!;
+  const friend = st.members.find((x) => x.member_id === i.friend_member_id);
+  return { invite_id: i.invite_id, direction: mine ? "sent" : "received", inviter_booking_id: i.inviter_booking_id,
+    session_id: i.session_id, friend_phone: mine ? i.friend_phone : null, inviter_name: `${inviter.member_name} ${inviter.member_surname.slice(0, 1)}.`,
+    friend_name: friend ? `${friend.member_name} ${friend.member_surname.slice(0, 1)}.` : null, status: i.status === "Pending" && !holdActive(i) ? "Expired" : i.status,
+    created_at: i.created_at, expires_at: i.expires_at, responded_at: i.responded_at, friend_booking_id: i.friend_booking_id,
+    bonus_at: i.bonus_at, class_name: v.class_name, trainer_name: v.trainer_name, branch_name: v.branch_name,
+    room_name: v.room_name, start_time: v.start_time, end_time: v.end_time };
+}
+
+/** book_session() without load/save, so accepting an invitation can use the same rules. */
+function bookFor(st: Store, m: DMember, sessionId: number): Result {
+  // staff accounts are for running the gym, not for booking classes
+  if (m.role === "Admin" || m.role === "Receptionist") return no("staff_cannot_book");
+  const s = st.sessions.find((x) => x.session_id === sessionId);
+  if (!s) return no("session_not_found");
+  if (s.cancelled_at) return no("session_cancelled");
+  if (new Date(s.start_time).getTime() <= Date.now()) return no("class_started");
+  if (m.membership_status === "Suspended") return no("membership_suspended");
+  if (m.membership_expiry < almatyYmd(s.start_time)) return no("membership_expired");
+  const old = st.bookings.find((b) => b.member_id === m.member_id && b.session_id === sessionId);
+  if (old && old.booking_status !== "Cancelled") return no("already_booked");
+  // a member can't be in two classes at the same time
+  const clash = st.bookings.some((b) => {
+    if (b.member_id !== m.member_id || b.session_id === sessionId) return false;
+    if (b.booking_status !== "Confirmed" && b.booking_status !== "Attended") return false;
+    const o = st.sessions.find((x) => x.session_id === b.session_id)!;
+    const ms = (iso: string) => new Date(iso).getTime();
+    return ms(o.start_time) < ms(s.end_time) && ms(s.start_time) < ms(o.end_time);
+  });
+  if (clash) return no("time_conflict");
+  if (placesTaken(st, sessionId) >= s.capacity) return no("class_full"); // held places are not free
+  if (old) Object.assign(old, { booking_status: "Confirmed", booking_time: nowIso(), cancelled_at: null, fee_forfeited: false });
+  else st.bookings.push({ booking_id: ++st.seq.bookings, member_id: m.member_id, session_id: sessionId, booking_status: "Confirmed",
+    booking_time: nowIso(), cancelled_at: null, fee_forfeited: false });
+  markBookedFromQueue(st, m.member_id, sessionId, (old ?? st.bookings[st.bookings.length - 1]).booking_id);
+  return ok("booked");
 }
 
 export const demoApi: Api = {
@@ -689,32 +770,9 @@ export const demoApi: Api = {
     const st = await load();
     const m = me(st);
     if (!m) return no("not_signed_in");
-    // staff accounts are for running the gym, not for booking classes
-    if (m.role === "Admin" || m.role === "Receptionist") return no("staff_cannot_book");
-    const s = st.sessions.find((x) => x.session_id === sessionId);
-    if (!s) return no("session_not_found");
-    if (s.cancelled_at) return no("session_cancelled");
-    if (new Date(s.start_time).getTime() <= Date.now()) return no("class_started");
-    if (m.membership_status === "Suspended") return no("membership_suspended");
-    if (m.membership_expiry < almatyYmd(s.start_time)) return no("membership_expired");
-    const old = st.bookings.find((b) => b.member_id === m.member_id && b.session_id === sessionId);
-    if (old && old.booking_status !== "Cancelled") return no("already_booked");
-    // a member can't be in two classes at the same time
-    const clash = st.bookings.some((b) => {
-      if (b.member_id !== m.member_id || b.session_id === sessionId) return false;
-      if (b.booking_status !== "Confirmed" && b.booking_status !== "Attended") return false;
-      const o = st.sessions.find((x) => x.session_id === b.session_id)!;
-      const ms = (iso: string) => new Date(iso).getTime();
-      return ms(o.start_time) < ms(s.end_time) && ms(s.start_time) < ms(o.end_time);
-    });
-    if (clash) return no("time_conflict");
-    if (taken(st, sessionId) >= s.capacity) return no("class_full");
-    if (old) Object.assign(old, { booking_status: "Confirmed", booking_time: nowIso(), cancelled_at: null, fee_forfeited: false });
-    else st.bookings.push({ booking_id: ++st.seq.bookings, member_id: m.member_id, session_id: sessionId, booking_status: "Confirmed",
-      booking_time: nowIso(), cancelled_at: null, fee_forfeited: false });
-    markBookedFromQueue(st, m.member_id, sessionId, (old ?? st.bookings[st.bookings.length - 1]).booking_id);
-    save(st);
-    return ok("booked");
+    const r = bookFor(st, m, sessionId);
+    if (r.ok) save(st);
+    return r;
   },
 
   async cancel(bookingId, acceptFee = false) {
@@ -737,6 +795,7 @@ export const demoApi: Api = {
         Object.assign(pass, { status: "Used", used_at: nowIso(), used_booking_id: b.booking_id });
       }
     }
+    releaseHoldsOf(st, b.booking_id);
     promoteWaitlist(st, b.session_id);
     save(st);
     // the same code as cancel_booking() returns; the page checks fee_forfeited afterwards
@@ -832,6 +891,7 @@ export const demoApi: Api = {
     for (const b of st.bookings) {
       if (b.session_id === sessionId && b.booking_status === "Confirmed") {
         Object.assign(b, { booking_status: "Cancelled", cancelled_at: at, fee_forfeited: false });
+        releaseHoldsOf(st, b.booking_id);
       }
     }
     s.cancelled_at = at;
@@ -870,6 +930,7 @@ export const demoApi: Api = {
     // both steps saved together (one transaction)
     st.checkIns.push({ check_in_id: ++st.seq.checkIns, booking_id: b.booking_id, reader_id: readerId, check_in_time: nowIso() });
     b.booking_status = "Attended";
+    buddyBonus(st, b.booking_id);
     save(st);
     return ok("checked_in");
   },
@@ -885,6 +946,7 @@ export const demoApi: Api = {
     if (new Date(s.start_time).getTime() > Date.now()) return no("class_not_started");
     st.checkIns.push({ check_in_id: ++st.seq.checkIns, booking_id: b.booking_id, reader_id: null, is_manual: true, check_in_time: nowIso() });
     Object.assign(b, { booking_status: "Attended", fee_forfeited: false });
+    buddyBonus(st, b.booking_id);
     save(st);
     return ok("checked_in_manual");
   },
@@ -1205,7 +1267,7 @@ export const demoApi: Api = {
       return new Date(o.start_time) < new Date(s.end_time) && new Date(s.start_time) < new Date(o.end_time);
     });
     if (clash) return no("time_conflict");
-    if (taken(st, sessionId) < s.capacity) return no("has_free_places");
+    if (placesTaken(st, sessionId) < s.capacity) return no("has_free_places");
     const mine = st.waitlist.filter((w) => w.member_id === m.member_id && w.status === "Waiting"
       && new Date(st.sessions.find((x) => x.session_id === w.session_id)!.start_time).getTime() > Date.now());
     if (mine.length >= WAITLIST_MAX) return no("waitlist_limit");
@@ -1496,5 +1558,93 @@ export const demoApi: Api = {
     m.membership_expiry = expiry;
     save(st);
     return { ok: true, code: "membership_renewed", membership_expiry: expiry };
+  },
+
+  // ---------- going with a friend ----------
+  async myBuddyInvites() {
+    const st = await load();
+    const m = me(st);
+    if (!m) return [];
+    return st.buddyInvites.filter((i) => i.inviter_id === m.member_id || i.friend_phone === m.phone_number)
+      .map((i) => vBuddy(st, i, i.inviter_id === m.member_id))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.invite_id - a.invite_id);
+  },
+
+  async inviteBuddy(bookingId, phone) {
+    const st = await load();
+    const m = me(st);
+    if (!m) return no("not_signed_in");
+    const p = normalizePhone(phone);
+    if (!p || !/^\+7\d{10}$/.test(p)) return no("invalid_phone");
+    const b = st.bookings.find((x) => x.booking_id === bookingId && x.member_id === m.member_id);
+    if (!b) return no("booking_not_found");
+    if (b.booking_status !== "Confirmed") return no("buddy_not_invitable");
+    const s = st.sessions.find((x) => x.session_id === b.session_id)!;
+    if (s.cancelled_at) return no("session_cancelled");
+    if (new Date(s.start_time).getTime() <= Date.now()) return no("class_started");
+    if (p === m.phone_number) return no("buddy_self");
+    const friend = st.members.find((x) => x.phone_number === p);
+    if (friend && (friend.role === "Admin" || friend.role === "Receptionist")) return no("buddy_staff");
+    if (friend && st.bookings.some((x) => x.member_id === friend.member_id && x.session_id === s.session_id
+      && (x.booking_status === "Confirmed" || x.booking_status === "Attended"))) return no("buddy_already_booked");
+    const live = (i: DBuddy) => i.status === "Accepted" || holdActive(i);
+    if (st.buddyInvites.some((i) => i.inviter_booking_id === bookingId && live(i))) return no("buddy_already_invited");
+    if (st.buddyInvites.filter((i) => i.inviter_id === m.member_id && holdActive(i)).length >= BUDDY_MAX_PENDING) return no("buddy_limit");
+    if (placesTaken(st, s.session_id) >= s.capacity) return no("class_full");
+    if (st.buddyInvites.some((i) => i.session_id === s.session_id && i.friend_phone === p && live(i))) return no("buddy_friend_invited");
+    const expires = new Date(Math.min(Date.now() + BUDDY_HOLD_MS, new Date(s.start_time).getTime())).toISOString();
+    st.buddyInvites.push({ invite_id: ++st.seq.buddyInvites, inviter_id: m.member_id, inviter_booking_id: bookingId, session_id: s.session_id,
+      friend_phone: p, friend_member_id: null, friend_booking_id: null, status: "Pending", created_at: nowIso(),
+      expires_at: expires, responded_at: null, bonus_at: null });
+    save(st);
+    return { ok: true, code: "buddy_invited", expires_at: expires };
+  },
+
+  async acceptBuddyInvite(inviteId) {
+    const st = await load();
+    const m = me(st);
+    if (!m) return no("not_signed_in");
+    const i = st.buddyInvites.find((x) => x.invite_id === inviteId && x.friend_phone === m.phone_number);
+    if (!i) return no("invite_not_found");
+    if (i.status !== "Pending") return no("invite_not_pending");
+    if (!holdActive(i)) { i.status = "Expired"; save(st); return no("invite_expired"); }
+    // booked the class on their own in the meantime: just go together
+    const own = st.bookings.find((b) => b.member_id === m.member_id && b.session_id === i.session_id
+      && (b.booking_status === "Confirmed" || b.booking_status === "Attended"));
+    if (own) {
+      Object.assign(i, { status: "Accepted", friend_member_id: m.member_id, friend_booking_id: own.booking_id, responded_at: nowIso() });
+      save(st);
+      return ok("buddy_accepted");
+    }
+    // the held place becomes the friend's booking, with the normal booking rules
+    i.status = "Accepted";
+    const r = bookFor(st, m, i.session_id);
+    if (!r.ok) return r;   // not saved: the place stays held, the friend can fix it and try again
+    const booking = st.bookings.find((b) => b.member_id === m.member_id && b.session_id === i.session_id)!;
+    Object.assign(i, { friend_member_id: m.member_id, friend_booking_id: booking.booking_id, responded_at: nowIso() });
+    save(st);
+    return ok("buddy_accepted");
+  },
+
+  async declineBuddyInvite(inviteId) {
+    const st = await load();
+    const m = me(st);
+    const i = st.buddyInvites.find((x) => x.invite_id === inviteId && x.friend_phone === m?.phone_number && x.status === "Pending");
+    if (!i) return no("invite_not_pending");
+    Object.assign(i, { status: "Declined", responded_at: nowIso() });
+    promoteWaitlist(st, i.session_id);
+    save(st);
+    return ok("buddy_declined");
+  },
+
+  async withdrawBuddyInvite(inviteId) {
+    const st = await load();
+    const m = me(st);
+    const i = st.buddyInvites.find((x) => x.invite_id === inviteId && x.inviter_id === m?.member_id && x.status === "Pending");
+    if (!i) return no("invite_not_pending");
+    Object.assign(i, { status: "Withdrawn", responded_at: nowIso() });
+    promoteWaitlist(st, i.session_id);
+    save(st);
+    return ok("buddy_withdrawn");
   },
 };

@@ -8,6 +8,7 @@ export type Result = {
   /** code to show at the front desk, for `redeemed` */ redemption_code?: string;
   /** place in the queue, for `waitlist_joined` */ position?: number;
   /** new YYYY-MM-DD expiry date, for `membership_renewed` */ membership_expiry?: string;
+  /** end of the held place, for `buddy_invited` */ expires_at?: string;
 };
 /**
  * Answer to a password-reset request. IMITATION for the course project: no SMS is
@@ -147,7 +148,7 @@ export const ENTITY_ID: Record<Entity, string> = {
 
 // ---------- Pulse points and rewards (migration_points_rewards.sql) ----------
 /** Points rules. The database trigger uses the same numbers. */
-export const POINTS = { attended: 10, no_show: -5, review: 5, streak_bonus: 20, streak_every: 4 } as const;
+export const POINTS = { attended: 10, no_show: -5, review: 5, streak_bonus: 20, streak_every: 4, buddy_bonus: 15 } as const;
 export type RewardKind = "free_class" | "late_cancel_pass" | "membership_days" | "merch";
 export const REWARD_KINDS: RewardKind[] = ["free_class", "late_cancel_pass", "membership_days", "merch"];
 export type Reward = {
@@ -161,7 +162,7 @@ export type Redemption = {
   code: string; status: RedemptionStatus; created_at: string; used_at: string | null; cancelled_at: string | null;
 };
 export type PointsSummary = { balance: number; lifetime: number; month_points: number; streak: number; streak_bonuses: number };
-export type PointsReason = "attended" | "no_show" | "no_show_reversed" | "streak_bonus" | "review" | "review_removed" | "redeem" | "redeem_refund";
+export type PointsReason = "attended" | "no_show" | "no_show_reversed" | "streak_bonus" | "review" | "review_removed" | "redeem" | "redeem_refund" | "buddy_bonus";
 export type PointsEntry = {
   entry_id: number; delta: number; reason: PointsReason; created_at: string;
   class_name: string | null; start_time: string | null; reward_name: string | null;
@@ -227,6 +228,28 @@ export type ClubVisit = { visit_id: number; member_id: number; member_fullname: 
 /** Front desk: member search result for "arrived". */
 export type MemberLookup = { member_id: number; member_fullname: string; phone_number: string;
   effective_status: Me["effective_status"]; in_club_branch_id: number | null };
+
+// ---------- going with a friend (migration_buddy_invite.sql) ----------
+/** A place is held for the invited friend this long (never past the start). */
+export const BUDDY_HOLD_MS = 2 * 3600_000;
+/** Places a member can hold for friends at the same time. */
+export const BUDDY_MAX_PENDING = 3;
+/** Pending = place held; Accepted = the friend booked; the others free the place. */
+export type BuddyInviteStatus = "Pending" | "Accepted" | "Declined" | "Withdrawn" | "Expired" | "Cancelled";
+export type BuddyInvite = {
+  invite_id: number;
+  /** sent = I invited someone; received = someone invited my phone number */
+  direction: "sent" | "received";
+  inviter_booking_id: number; session_id: number;
+  /** only for `sent` */ friend_phone: string | null;
+  /** "Aruzhan B." */ inviter_name: string;
+  /** set once the friend accepted */ friend_name: string | null;
+  status: BuddyInviteStatus; created_at: string; expires_at: string; responded_at: string | null;
+  friend_booking_id: number | null;
+  /** both came: +15 points each */ bonus_at: string | null;
+  class_name: string; trainer_name: string; branch_name: string; room_name: string; start_time: string; end_time: string;
+};
+
 export type Row = Record<string, unknown>;
 
 /**
@@ -460,4 +483,25 @@ export interface Api {
   visitEnter(memberId: number, branchId: number): Promise<Result>;
   /** Front desk marks that the member left. Codes: `visit_ended`, `visit_not_open`, `staff_only`. */
   visitLeave(visitId: number): Promise<Result>;
+
+  // ---------- going with a friend (migration_buddy_invite.sql) ----------
+  // Without the migration: no invitations, and the actions answer with an error code.
+  /** Invitations I sent and invitations to my phone number, newest first. */
+  myBuddyInvites(): Promise<BuddyInvite[]>;
+  /**
+   * Holds one place in the class of my confirmed booking for a friend (by phone) for 2 hours.
+   * Codes: `buddy_invited` (+ `expires_at`), `invalid_phone`, `booking_not_found`, `buddy_not_invitable`,
+   * `session_cancelled`, `class_started`, `buddy_self`, `buddy_staff`, `buddy_already_booked`,
+   * `buddy_already_invited`, `buddy_friend_invited`, `buddy_limit`, `class_full`, `not_signed_in`.
+   */
+  inviteBuddy(bookingId: number, phone: string): Promise<Result>;
+  /**
+   * The friend takes the held place: it becomes their booking (normal booking rules apply).
+   * Codes: `buddy_accepted`, `invite_not_found`, `invite_not_pending`, `invite_expired`, plus the `book` codes.
+   */
+  acceptBuddyInvite(inviteId: number): Promise<Result>;
+  /** Codes: `buddy_declined`, `invite_not_pending`. */
+  declineBuddyInvite(inviteId: number): Promise<Result>;
+  /** The inviter takes the invitation back. Codes: `buddy_withdrawn`, `invite_not_pending`. */
+  withdrawBuddyInvite(inviteId: number): Promise<Result>;
 }

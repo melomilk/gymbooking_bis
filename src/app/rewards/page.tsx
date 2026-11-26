@@ -102,6 +102,7 @@ export default function RewardsPage() {
           <li>{t("rule_attended", { n: POINTS.attended })}</li>
           <li>{t("rule_streak", { n: POINTS.streak_bonus, weeks: POINTS.streak_every })}</li>
           <li>{t("rule_review", { n: POINTS.review })}</li>
+          <li>{t("rule_buddy", { n: POINTS.buddy_bonus })}</li>
           <li>{t("rule_no_show", { n: -POINTS.no_show })}</li>
           <li>{t("rule_level")}</li>
         </ul>

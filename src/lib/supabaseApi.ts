@@ -2,7 +2,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import type {
   Api, AttendanceRow, BookingRow, CertificateFile, Entity, Leaderboard, MyReview, PointsEntry, PointsSummary, Redemption,
   ResetRequest, Result, Review, Reward, Row, SessionRow, TrainerApplication, TrainerRating, WaitlistEntry,
-  ClassTypeOption, RoomOption, SessionRequest, ClubNow, ClubVisit, MemberLookup, PublicProfile,
+  ClassTypeOption, RoomOption, SessionRequest, ClubNow, ClubVisit, MemberLookup, PublicProfile, BuddyInvite,
 } from "./types";
 import { CERT_MAX_BYTES, CERT_MAX_FILES, CERT_TYPES, ENTITY_ID, EXCUSE_DOC_MAX_BYTES, EXCUSE_DOC_TYPES } from "./types";
 import { checkExcuse, checkTrainerApplication, cleanQuery, MIN_PASSWORD, normalizePhone, phoneToAuthEmail, validName } from "./validate";
@@ -473,4 +473,21 @@ export const supabaseApi: Api = {
 
   visitEnter: (memberId, branchId) => rpc("visit_enter", { p_member_id: memberId, p_branch_id: branchId }),
   visitLeave: (visitId) => rpc("visit_leave", { p_visit_id: visitId }),
+
+  // ---------- going with a friend (migration_buddy_invite.sql) ----------
+  async myBuddyInvites() {
+    const { data: s } = await sb().auth.getSession();
+    if (!s.session) return [];
+    await sb().rpc("expire_buddy_invites"); // frees holds that ran out; errors ignored (no migration yet)
+    const { data } = await sb().from("v_my_buddy_invites").select("*").order("created_at", { ascending: false }).limit(50);
+    return (data ?? []) as BuddyInvite[];
+  },
+  async inviteBuddy(bookingId, phone) {
+    const p = normalizePhone(phone);
+    if (!p) return { ok: false, code: "invalid_phone" };
+    return rpc("invite_buddy", { p_booking_id: bookingId, p_phone: p });
+  },
+  acceptBuddyInvite: (inviteId) => rpc("accept_buddy_invite", { p_invite_id: inviteId }),
+  declineBuddyInvite: (inviteId) => rpc("decline_buddy_invite", { p_invite_id: inviteId }),
+  withdrawBuddyInvite: (inviteId) => rpc("withdraw_buddy_invite", { p_invite_id: inviteId }),
 };
