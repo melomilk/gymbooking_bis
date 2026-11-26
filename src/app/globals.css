@@ -257,3 +257,9 @@ div.club-person { cursor: default; }
 .renew-status { margin: .4rem 0 0; border: 0; padding: 1.5rem .5rem; }
 .renew-status p { margin: 0; }
 @media (max-width: 520px) { .plan-options { grid-template-columns: 1fr; } }
+
+/* going with a friend */
+.buddy-line { margin-top: .25rem; }
+.buddy-line .link { font-size: inherit; margin-left: .3rem; }
+.row-item.buddy-invite { border-color: var(--good); }
+.buddy-card-link { display: inline-block; margin-top: .5rem; }

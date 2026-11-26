@@ -16,6 +16,7 @@ Automated tests for the application's business logic (the "backend" of this proj
 | 2. After fixing BUG-01 (+ TC-21) | 21 | 21 | 0 |
 | 3. "Right now in the club" added (+ TC-33…TC-36), whole suite | 56 | 56 | 0 |
 | 4. Membership renewal added (+ TC-37…TC-38), whole suite | 58 | 58 | 0 |
+| 5. "Going with a friend" added (+ TC-39…TC-45), whole suite | 65 | 65 | 0 |
 
 ## 3. Test cases
 
@@ -88,3 +89,23 @@ Not covered: trainer sign-up/applications, trainer roster, manual check-in, atte
 - Tests cover `demoApi.ts`; RLS policies in a real Supabase project and the `/api/register` route (rate limit) were not executed. The SQL for the Receptionist change was checked on local PostgreSQL only.
 - Frontend tests are not included in this report.
 - Time-dependent rules (3-hour cancellation window) are tested by creating sessions at fixed offsets from the current time.
+
+### Going with a friend (run 5) — `tests/backend/buddy.test.ts`
+
+| ID | Area | Steps | Expected result | Result |
+|---|---|---|---|---|
+| TC-39 | Invite | Book a class (capacity 2), invite with bad phone / own phone / staff phone / foreign booking, then a friend (`8 701 …` format), then a second friend; a third member books | `invalid_phone`, `buddy_self`, `buddy_staff`, `booking_not_found`; `buddy_invited` with `expires_at` ≈ now + 2 h; `buddy_already_invited`; `spots_taken` = 2; third member gets `class_full` | PASS |
+| TC-40 | Accept | Another member tries to see / accept the invitation; the friend accepts twice | Not visible, `invite_not_found`; `buddy_accepted` then `invite_not_pending`; friend's booking `Confirmed`; `spots_taken` stays 2; inviter sees `Accepted` + friend's short name | PASS |
+| TC-41 | Accept | Invite a number with no account; that person registers and accepts | Invitation appears as `received`; `buddy_accepted` | PASS |
+| TC-42 | Expiry | Hold makes the class full, someone joins the waitlist; time moves 2 h forward | Hold ends: waitlisted member is booked; friend sees `Expired`, accept → `invite_not_pending`; inviting again → `class_full` | PASS |
+| TC-43 | Release | Class in 40 min: hold ends at the start. Decline, re-invite, withdraw twice, re-invite, inviter cancels | `expires_at` = start; place freed each time (`spots_taken` back to 1, then 0); `buddy_withdrawn` then `invite_not_pending`; invitation `Cancelled` | PASS |
+| TC-44 | Bonus | Inviter and friend checked in by NFC (one after the other), a third member alone | No bonus after the first check-in; after both: `buddy_bonus` +15 once each (balance and level 25); member who came alone has 10 | PASS |
+| TC-45 | Limits | Friend already booked; same number invited by two members; 4 holds at once; logged out | `buddy_already_booked`, `buddy_friend_invited`, 4th hold `buddy_limit`, `not_signed_in` | PASS |
+
+SQL (`supabase/migration_buddy_invite.sql`) is not covered by Vitest. It was run on PostgreSQL 16 with all
+earlier migrations applied and checked with a scenario script: hold counted in `v_sessions`, `book_session`
+refuses the held place, decline → waitlisted member booked by `promote_waitlist`, accept → booking, NFC
+check-in of both → `buddy_bonus` +15 each (not after only one), expiry by time + `expire_buddy_invites()`,
+inviter cancels → invitation `Cancelled`, `anon` and `authenticated` can't read `buddy_invites` directly.
+Running the migration twice is harmless; the rollback file restores the previous function and view
+definitions exactly (compared with `pg_get_functiondef`).

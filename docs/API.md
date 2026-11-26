@@ -262,3 +262,18 @@ never happened and the attendance report would be wrong.
 
 A visit without "left" counts as finished 3 hours after arrival (`VISIT_MAX_MS`). The load thresholds
 (40 % and 75 % of `branches.club_capacity`) live in `src/lib/club.ts` and in `club_load()` in SQL.
+
+## Going with a friend (`migration_buddy_invite.sql`)
+
+| Method | Returns | Description |
+|---|---|---|
+| `myBuddyInvites()` | `BuddyInvite[]` | Invitations I sent (`direction = "sent"`, with `friend_phone`) and invitations to my phone (`"received"`). Calls `expire_buddy_invites()` first. `[]` without the migration. |
+| `inviteBuddy(bookingId, phone)` | `Result` | Holds one place in the class of my `Confirmed` booking for 2 h (at most until the start). Codes: `buddy_invited` (+ `expires_at`), `invalid_phone`, `booking_not_found`, `buddy_not_invitable`, `session_cancelled`, `class_started`, `buddy_self`, `buddy_staff`, `buddy_already_booked`, `buddy_already_invited`, `buddy_friend_invited`, `buddy_limit`, `class_full`. |
+| `acceptBuddyInvite(inviteId)` | `Result` | The held place becomes the friend's booking (all `book` rules apply). Codes: `buddy_accepted`, `invite_not_found`, `invite_not_pending`, `invite_expired`, plus the `book` codes (e.g. `membership_expired`, `time_conflict`). |
+| `declineBuddyInvite(inviteId)` / `withdrawBuddyInvite(inviteId)` | `Result` | Friend says no / inviter takes it back; the place is free again. Codes: `buddy_declined` / `buddy_withdrawn`, `invite_not_pending`. |
+
+Rules: one friend per booking, at most 3 held places per member at a time (`BUDDY_MAX_PENDING`).
+A held place counts in `spots_taken` and in every capacity check (booking, waitlist). When the
+hold ends (declined, withdrawn, expired, inviter cancelled) the waitlist gets the place.
+When both bookings become `Attended` (NFC check-in, or the front desk when the reader fails),
+both members get `+15` points with reason `buddy_bonus`, once.

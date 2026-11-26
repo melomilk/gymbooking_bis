@@ -6,10 +6,11 @@ import { useAuth, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import Modal from "@/components/Modal";
 import { dayKey, fmtDate, fmtDayLong, fmtDayShort, fmtTime, FREE_CANCEL_MS } from "@/lib/format";
-import { WAITLIST_CLOSES_MS, type Branch, type SessionRow, type TrainerRating, type WaitlistEntry } from "@/lib/types";
+import { WAITLIST_CLOSES_MS, type Branch, type BuddyInvite, type SessionRow, type TrainerRating, type WaitlistEntry } from "@/lib/types";
 import { Stars } from "@/components/Rewards";
 import { useSessionState } from "@/lib/useSessionState";
 import { ClubNowWidget } from "@/components/ClubNow";
+import { BuddyBanner } from "@/components/Buddy";
 
 type Alt = { session: SessionRow; options: SessionRow[]; reason: string };
 
@@ -34,6 +35,9 @@ export default function SchedulePage() {
   const [queueCounts, setQueueCounts] = useState<Record<number, number>>({});
   const [myQueue, setMyQueue] = useState<Map<number, WaitlistEntry>>(new Map());
   const [leaving, setLeaving] = useState<SessionRow | null>(null);
+  // "going with a friend": my confirmed booking per class (for "+ friend") and open invitations to me
+  const [myBookingOf, setMyBookingOf] = useState<Map<number, number>>(new Map());
+  const [invitesToMe, setInvitesToMe] = useState<BuddyInvite[]>([]);
 
   useEffect(() => {
     if (me?.role !== "Member") { setAppPending(false); return; }
@@ -41,10 +45,14 @@ export default function SchedulePage() {
   }, [me]);
 
   const load = useCallback(async () => {
+    // invitations first: reading them frees holds that ran out, so the free places below are fresh
+    const bd = me ? await api.myBuddyInvites().catch(() => [] as BuddyInvite[]) : [];
     const [s, b, mine, rt, qc, mq] = await Promise.all([
       api.listSessions(), api.listBranches(), me ? api.myBookings(me.member_id) : Promise.resolve([]),
       api.trainerRatings().catch(() => []), api.waitlistCounts().catch(() => ({})), me ? api.myWaitlist().catch(() => []) : Promise.resolve([]),
     ]);
+    setInvitesToMe(bd.filter((i) => i.direction === "received" && i.status === "Pending"));
+    setMyBookingOf(new Map(mine.filter((x) => x.booking_status === "Confirmed").map((x) => [x.session_id, x.booking_id])));
     const bookedSet = new Set(mine.filter((x) => x.booking_status !== "Cancelled").map((x) => x.session_id));
     setSessions(s); setBranches(b); setBooked(bookedSet); setLoading(false);
     setRatings(new Map(rt.map((r) => [r.trainer_id, r])));
@@ -143,6 +151,8 @@ export default function SchedulePage() {
         <div className="notice">{t("app_pending_home")} <Link href="/profile#trainer-application">{t("app_view")}</Link></div>
       )}
 
+      {!staff && <BuddyBanner invites={invitesToMe} />}
+
       <ClubNowWidget />
 
       <div className="filters">
@@ -199,6 +209,10 @@ export default function SchedulePage() {
                       </button>
                     )}
                   </div>
+                  {/* "going with a friend": hold a place for a friend in a class I booked */}
+                  {mine && myBookingOf.has(s.session_id) && !full && (
+                    <Link className="small link-like buddy-card-link" href={`/profile?invite=${myBookingOf.get(s.session_id)}`}>👥 {t("buddy_card_link")}</Link>
+                  )}
                 </article>
               );
             })}

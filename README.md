@@ -26,6 +26,7 @@ Members register with a phone number, browse the schedule and book a place. The 
 - **Pulse points** only for real visits (NFC check-in or front desk), never for just booking: +10 per class, +20 for every 4 weeks in a row, +5 for a review, −5 for a no-show (given back if excused). Levels, 8 badges and a monthly leaderboard (first name + initial only).
 - **Rewards for points**: a free visit, a late-cancel pass (used automatically), extra membership days (applied at once) and gym merch. Each exchange gets a code like `PG-7K3Q2A`; the front desk hands out the prize. The admin edits the catalog.
 - **Waitlist**: join the queue of a full class; when a place frees up, the first person is booked automatically. The queue closes 3 hours before the start, so nobody is booked into a class they can't cancel for free.
+- **Going with a friend**: when booked for a class, invite a friend by phone number. One place is held for the friend for 2 hours (never past the start); they accept or decline in My Profile (a new person can sign up with that number first). If nobody answers, the place is released by itself and the waitlist gets it. When both are checked in, each gets +15 Pulse points.
 - **Trainer class requests**: a trainer proposes a class (type, room, date and time, capacity, a note); the end time follows from the class duration. The admin approves it and it appears in the schedule at once, or rejects it with a reason. The room and the trainer are checked for conflicts when the request is sent and again on approval.
 - **Verified reviews**: only members who attended (status Attended) can rate a class, 1–5 stars, within 14 days. Trainers see reviews without names; the schedule shows each trainer's rating.
 - **Right now in the club**: the front desk marks when a member arrives and leaves (tab "In the club"). The home page shows the club load per branch (low / medium / high, from the branch's comfortable capacity: under 40 %, under 75 %, 75 % and more) and the members who switched on **Public profile** in My Profile. Clicking a person opens their profile: visits, classes attended, favourite class. Private members are only counted; logged-out visitors see the load but no names. A visit without "left" ends by itself after 3 hours.
@@ -162,6 +163,8 @@ supabase/
   migration_reviews.sql   Reviews of attended classes, trainer ratings (after points_rewards)
   migration_session_requests.sql  Trainers propose classes, the admin approves them into the schedule
   migration_club_presence.sql  Club visits (arrived / left), club load, public profiles
+  migration_buddy_invite.sql  "Going with a friend": held places for invited friends, +15 bonus (after points_rewards and waitlist)
+  migration_buddy_invite_rollback.sql  Undo of the above (restores the previous functions)
 ```
 
 ---
@@ -185,7 +188,8 @@ Without environment variables, the app runs in **demo mode**: data is kept in th
    then `supabase/migration_trainer_signup.sql`, `supabase/migration_signup_rate_limit.sql`
    and `supabase/migration_excuse_no_show.sql`, then `supabase/migration_points_rewards.sql`,
    `supabase/migration_waitlist.sql` and `supabase/migration_reviews.sql` (in this order), then
-   `supabase/migration_session_requests.sql`.
+   `supabase/migration_session_requests.sql`, `supabase/migration_club_presence.sql`,
+   `supabase/migration_membership_renewal.sql` and `supabase/migration_buddy_invite.sql`.
 2. Create `.env.local` (see `.env.example`):
 
    ```

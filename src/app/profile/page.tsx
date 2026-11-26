@@ -7,7 +7,7 @@ import { useAuth, useT } from "@/components/Providers";
 import Toast, { type ToastMsg } from "@/components/Toast";
 import Modal from "@/components/Modal";
 import { FREE_CANCEL_MS, fmtDate, fmtDateTime, fmtDayShort, fmtTime } from "@/lib/format";
-import { REVIEW_WINDOW_DAYS, type BookingRow, type MyReview, type PointsSummary, type Redemption, type Result, type TrainerApplication, type WaitlistEntry } from "@/lib/types";
+import { REVIEW_WINDOW_DAYS, type BookingRow, type BuddyInvite, type MyReview, type PointsSummary, type Redemption, type Result, type TrainerApplication, type WaitlistEntry } from "@/lib/types";
 import type { Key } from "@/lib/i18n";
 import { ReviewModal } from "@/components/Rewards";
 import { levelFor } from "@/lib/rewards";
@@ -16,6 +16,7 @@ import { attendanceRate, fmtRate } from "@/lib/stats";
 import { useSessionState } from "@/lib/useSessionState";
 import { PublicProfileToggle } from "@/components/ClubNow";
 import RenewMembershipModal from "@/components/RenewMembershipModal";
+import { BuddyInviteModal, ReceivedAcceptedLine, ReceivedInvites, SentInviteLine } from "@/components/Buddy";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -34,11 +35,15 @@ export default function ProfilePage() {
   const [passes, setPasses] = useState<Redemption[]>([]);
   const [reviewing, setReviewing] = useState<BookingRow | null>(null);
   const [renewOpen, setRenewOpen] = useState(false);
+  // "going with a friend" (empty without migration_buddy_invite.sql)
+  const [buddies, setBuddies] = useState<BuddyInvite[]>([]);
+  const [inviting, setInviting] = useState<BookingRow | null>(null);
 
   const load = useCallback(async () => {
     if (!me) return;
-    const [bookings, application, pts, wl, rv, red] = await Promise.all([
+    const [bookings, application, pts, wl, rv, red, bd] = await Promise.all([
       api.myBookings(me.member_id), api.myTrainerApplication(), api.myPoints(), api.myWaitlist(), api.myReviews(), api.myRedemptions(),
+      api.myBuddyInvites().catch(() => [] as BuddyInvite[]),
     ]);
     setList(bookings);
     setApp(application);
@@ -46,8 +51,28 @@ export default function ProfilePage() {
     setQueue(wl);
     setReviews(rv);
     setPasses(red.filter((r) => r.kind === "late_cancel_pass" && r.status === "Active"));
+    setBuddies(bd);
     setLoading(false);
   }, [me]);
+
+  // "+ friend" on the schedule opens the invite dialog here: /profile?invite=<booking_id>
+  useEffect(() => {
+    if (loading) return;
+    const id = Number(new URLSearchParams(window.location.search).get("invite"));
+    if (!id) return;
+    window.history.replaceState(null, "", "/profile");
+    const b = list.find((x) => x.booking_id === id && x.booking_status === "Confirmed" && new Date(x.start_time).getTime() > Date.now());
+    if (b) setInviting(b);
+  }, [loading, list]);
+
+  async function buddyResult(r: Result) {
+    setToast({ ok: r.ok, text: tr(r) });
+    load();
+  }
+
+  async function withdrawBuddy(i: BuddyInvite) {
+    buddyResult(await api.withdrawBuddyInvite(i.invite_id));
+  }
 
   async function leaveQueue(e: WaitlistEntry) {
     const r = await api.leaveWaitlist(e.session_id);
@@ -110,10 +135,18 @@ export default function ProfilePage() {
   const queueShown = queue.filter((e) => e.status === "Waiting"
     || (e.status !== "Left" && new Date(e.start_time).getTime() > now - 86400_000));
   const lv = points ? levelFor(points.lifetime) : null;
+  const canBook = me.role === "Member" || me.role === "Trainer";
+  const received = buddies.filter((i) => i.direction === "received" && i.status === "Pending");
+  // the newest invitation I sent for this booking, and the accepted one that brought me to it
+  const sentFor = (b: BookingRow) => buddies.find((i) => i.direction === "sent" && i.inviter_booking_id === b.booking_id);
+  const receivedFor = (b: BookingRow) => buddies.find((i) => i.direction === "received" && i.status === "Accepted" && i.friend_booking_id === b.booking_id);
 
   const row = (b: BookingRow, canCancel: boolean) => {
     const freeUntil = new Date(new Date(b.start_time).getTime() - FREE_CANCEL_MS);
     const isLate = freeUntil.getTime() <= now;
+    const sent = sentFor(b), got = receivedFor(b);
+    // one friend per booking: a new invitation only when the last one ended without them
+    const canInvite = canCancel && canBook && (!sent || (sent.status !== "Pending" && sent.status !== "Accepted"));
     return (
       <li key={b.booking_id} className="row-item" data-booking={b.booking_id}>
         <div>
@@ -124,6 +157,8 @@ export default function ProfilePage() {
               {isLate ? t("late_cancel_note") : t("free_cancel_until", { time: `${fmtDayShort(freeUntil.toISOString(), lang)}, ${fmtTime(freeUntil.toISOString())}` })}
             </div>
           )}
+          {sent && (canCancel || sent.status === "Accepted") && <SentInviteLine invite={sent} onWithdraw={withdrawBuddy} />}
+          {!sent && got && <ReceivedAcceptedLine invite={got} />}
         </div>
         <div className="right">
           <span className={`pill ${b.booking_status.toLowerCase()}`}>
@@ -131,6 +166,7 @@ export default function ProfilePage() {
             {b.fee_forfeited ? ` · ${t("fee_forfeited")}` : ""}
           </span>
           {b.excuse_reason && <span className="small muted">{t("excused_label", { reason: t(`er_${b.excuse_reason}`) })}</span>}
+          {canInvite && <button className="btn ghost buddy-btn" onClick={() => setInviting(b)}>👥 {t("buddy_btn")}</button>}
           {canCancel && <button className="btn ghost" onClick={() => cancel(b)}>{t("cancel_booking")}</button>}
           {reviewable(b) && (() => {
             const mine = reviews.find((r) => r.booking_id === b.booking_id);
@@ -182,6 +218,8 @@ export default function ProfilePage() {
       {me.is_public !== undefined && (me.role === "Member" || me.role === "Trainer") && (
         <PublicProfileToggle value={me.is_public} onResult={async (r) => { setToast({ ok: r.ok, text: tr(r) }); await refresh(); }} />
       )}
+
+      {canBook && <ReceivedInvites invites={received} onResult={buddyResult} />}
 
       <TrainerApplicationBlock app={app} isMember={me.role === "Member"} error={appError} onSent={applicationSent} />
 
@@ -242,6 +280,10 @@ export default function ProfilePage() {
           <p>{passes.length > 0 ? t("late_cancel_body_pass") : t("late_cancel_body")}</p>
           <p className="small muted">{confirmLate.class_name} · {fmtDayShort(confirmLate.start_time, lang)}, {fmtTime(confirmLate.start_time)}</p>
         </Modal>
+      )}
+      {inviting && (
+        <BuddyInviteModal booking={inviting} onClose={() => setInviting(null)}
+          onDone={(r) => { setInviting(null); buddyResult(r); }} />
       )}
       {reviewing && (
         <ReviewModal booking={reviewing} existing={reviews.find((r) => r.booking_id === reviewing.booking_id)}
